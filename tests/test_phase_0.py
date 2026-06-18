@@ -1,0 +1,370 @@
+"""Phase 0 unit tests: physics, W′ models, wind, course, and simulator."""
+
+import math
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from ttt_strat.physics import aero_force_N, dv_ds, dw_ds, grav_force_N, rolling_force_N
+from ttt_strat.w_prime.bartram import BartramModel
+from ttt_strat.w_prime.differential import DifferentialModel
+from ttt_strat.w_prime.linear import LinearModel
+from ttt_strat.w_prime.skiba import SkibaModel
+
+_GPX_PATH = Path(__file__).parent.parent / "data" / "ttt_strat" / "input" / "stage-3-route.gpx"
+
+_ALL_MODELS = [LinearModel(), SkibaModel(), BartramModel(), DifferentialModel()]
+
+CP_W = 280.0
+W_PRIME_J = 20_000.0
+W_PRIME_BAL_J = 15_000.0  # partially depleted
+
+
+# ---------------------------------------------------------------------------
+# Physics force functions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_rolling_force():
+    theta = math.atan(1e-3)
+    f = rolling_force_N(crr=4e-3, mass_kg=72.0, theta_rad=theta)
+    expected = 4e-3 * 72.0 * 9.81 * math.cos(theta)
+    assert abs(f - expected) < 1e-6
+
+
+@pytest.mark.unit
+def test_aero_force_no_wind():
+    f = aero_force_N(rho_kg_per_m3=1.225, cda_m2=0.25, v_m_per_s=10.0, v_w_m_per_s=0.0)
+    expected = 0.5 * 1.225 * 0.25 * 100.0
+    assert abs(f - expected) < 1e-9
+
+
+@pytest.mark.unit
+def test_aero_force_head_wind():
+    f_no_wind = aero_force_N(1.225, 0.25, 10.0, 0.0)
+    f_head = aero_force_N(1.225, 0.25, 10.0, 2.0)
+    assert f_head > f_no_wind
+
+
+@pytest.mark.unit
+def test_grav_force_uphill():
+    f = grav_force_N(mass_kg=72.0, theta_rad=math.atan(0.05))
+    assert f > 0.0
+
+
+@pytest.mark.unit
+def test_grav_force_downhill():
+    f = grav_force_N(mass_kg=72.0, theta_rad=math.atan(-0.05))
+    assert f < 0.0
+
+
+@pytest.mark.unit
+def test_grav_force_value():
+    theta = math.atan(0.05)
+    f = grav_force_N(72.0, theta)
+    expected = 72.0 * 9.81 * math.sin(theta)
+    assert abs(f - expected) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# W′ models
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", _ALL_MODELS)
+def test_w_prime_depletion_above_cp(model):
+    h = model.h(p_W=CP_W + 50.0, w_prime_bal_J=W_PRIME_BAL_J, cp_W=CP_W, w_prime_J=W_PRIME_J)
+    assert h > 0.0, f"{model.__class__.__name__} should deplete above CP"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", _ALL_MODELS)
+def test_w_prime_at_cp(model):
+    h = model.h(p_W=CP_W, w_prime_bal_J=W_PRIME_BAL_J, cp_W=CP_W, w_prime_J=W_PRIME_J)
+    assert abs(h) < 1e-9 or h == 0.0, f"{model.__class__.__name__} h should be 0 at CP"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model", _ALL_MODELS)
+def test_w_prime_recovery_below_cp(model):
+    h = model.h(p_W=CP_W - 50.0, w_prime_bal_J=W_PRIME_BAL_J, cp_W=CP_W, w_prime_J=W_PRIME_J)
+    assert h < 0.0, f"{model.__class__.__name__} should recover below CP"
+
+
+@pytest.mark.unit
+def test_w_prime_recovery_stops_at_full():
+    """DifferentialModel recovery rate → 0 when reservoir is full."""
+    model = DifferentialModel()
+    h_full = model.h(CP_W - 50.0, W_PRIME_J, CP_W, W_PRIME_J)
+    h_half = model.h(CP_W - 50.0, W_PRIME_J * 0.5, CP_W, W_PRIME_J)
+    assert abs(h_full) < 1e-9
+    assert h_half < 0.0
+
+
+@pytest.mark.unit
+def test_dw_ds_sign():
+    """dW′_bal/ds should be negative (depleting) when P > CP."""
+    result = dw_ds(
+        v_m_per_s=10.0,
+        p_W=CP_W + 50.0,
+        w_prime_bal_J=W_PRIME_BAL_J,
+        cp_W=CP_W,
+        w_prime_J=W_PRIME_J,
+        model_id=DifferentialModel.MODEL_ID,
+    )
+    assert result < 0.0
+
+
+# ---------------------------------------------------------------------------
+# WindField
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_wind_head_wind_north(calm_wind):
+    # bearing due North (φ ≈ 0): head_wind = -(w_E×0 + w_N×1) = -w_N
+    phi = np.array([0.0])
+    hw = calm_wind.head_wind_m_per_s(phi)
+    expected = -calm_wind.w_north_m_per_s
+    assert abs(hw[0] - expected) < 1e-10
+
+
+@pytest.mark.unit
+def test_wind_cross_wind_north(calm_wind):
+    # bearing due North (φ ≈ 0): cross_wind = w_E×1 - w_N×0 = w_E
+    phi = np.array([0.0])
+    cw = calm_wind.cross_wind_m_per_s(phi)
+    expected = calm_wind.w_east_m_per_s
+    assert abs(cw[0] - expected) < 1e-10
+
+
+@pytest.mark.unit
+def test_wind_apparent_speed_formula(calm_wind):
+    v = 10.0
+    phi = np.array([math.pi / 4])
+    v_app = calm_wind.apparent_speed_m_per_s(v, phi)
+    vw = calm_wind.head_wind_m_per_s(phi)
+    vc = calm_wind.cross_wind_m_per_s(phi)
+    expected = math.sqrt((v + vw[0]) ** 2 + vc[0] ** 2)
+    assert abs(v_app[0] - expected) < 1e-10
+
+
+@pytest.mark.unit
+def test_wind_yaw_formula(calm_wind):
+    v = 10.0
+    phi = np.array([math.pi / 4])
+    yaw = calm_wind.yaw_rad(v, phi)
+    vw = calm_wind.head_wind_m_per_s(phi)
+    vc = calm_wind.cross_wind_m_per_s(phi)
+    expected = math.atan2(vc[0], v + vw[0])
+    assert abs(yaw[0] - expected) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# CourseProcessor
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_course_uniform_grid(flat_course):
+    diffs = np.diff(flat_course.s_m)
+    assert np.allclose(diffs, diffs[0], rtol=1e-10), "s_m must be uniformly spaced"
+
+
+@pytest.mark.unit
+def test_course_node_count(flat_course):
+    assert len(flat_course.s_m) == 400
+
+
+@pytest.mark.unit
+def test_course_theta_approx(flat_course):
+    expected = math.atan(1e-3)
+    assert np.allclose(flat_course.theta_rad, expected, atol=1e-4)
+
+
+@pytest.mark.unit
+def test_course_surface_factor_default(flat_course):
+    assert np.all(flat_course.surface_factor == 1.0)
+
+
+# ---------------------------------------------------------------------------
+# ForwardSimulator
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_simulator_flat_finite(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    from ttt_strat.simulator import ForwardSimulator
+
+    sim = ForwardSimulator()
+    p = np.full(len(flat_course.s_m), reference_rider.cp_W)
+    result = sim.simulate(reference_rider, flat_course, calm_wind, p, rho_kg_per_m3)
+    assert math.isfinite(result.time_total_s)
+    assert result.time_total_s > 0.0
+
+
+@pytest.mark.unit
+def test_simulator_speeds_positive(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    from ttt_strat.simulator import ForwardSimulator
+
+    sim = ForwardSimulator()
+    p = np.full(len(flat_course.s_m), reference_rider.cp_W)
+    result = sim.simulate(reference_rider, flat_course, calm_wind, p, rho_kg_per_m3)
+    # Node 0 is the standing start (v → 0); all subsequent nodes must be positive
+    assert np.all(result.v_m_per_s >= 0.0)
+    assert np.all(result.v_m_per_s[1:] > 0.0)
+
+
+@pytest.mark.unit
+def test_simulator_vs_analytical(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    """Near-flat constant-power: T should be within 1 % of S / v_steady."""
+    from scipy.optimize import brentq
+
+    from ttt_strat.physics import aero_force_N, grav_force_N, rolling_force_N
+    from ttt_strat.simulator import ForwardSimulator
+
+    r = reference_rider
+    rho = rho_kg_per_m3
+
+    # Head wind at flat-course bearing (nearly zero)
+    vw_scalar = float(calm_wind.head_wind_m_per_s(flat_course.bearing_rad[:1])[0])
+    theta_scalar = float(flat_course.theta_rad[0])
+
+    def power_balance(v):
+        return (
+            r.cp_W * (1.0 - r.l_drivetrain)
+            - (
+                rolling_force_N(r.crr, r.mass_kg, theta_scalar)
+                + aero_force_N(rho, r.cda_m2, v, vw_scalar)
+                + grav_force_N(r.mass_kg, theta_scalar)
+            )
+            * v
+        )
+
+    v_steady = brentq(power_balance, 1.0, 30.0)
+    S = flat_course.s_m[-1]
+    T_analytical = S / v_steady
+
+    sim = ForwardSimulator()
+    p = np.full(len(flat_course.s_m), r.cp_W)
+    result = sim.simulate(r, flat_course, calm_wind, p, rho)
+
+    rel_error = abs(result.time_total_s - T_analytical) / T_analytical
+    assert rel_error < 0.01, (
+        f"Simulated T={result.time_total_s:.1f} s vs analytical T={T_analytical:.1f} s "
+        f"({rel_error*100:.2f}% error)"
+    )
+
+
+@pytest.mark.unit
+def test_simulator_w_prime_violated(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    """Power far above CP should exhaust W′ and set the violated flag."""
+    from ttt_strat.simulator import ForwardSimulator
+
+    sim = ForwardSimulator()
+    p = np.full(len(flat_course.s_m), reference_rider.cp_W + 500.0)
+    result = sim.simulate(reference_rider, flat_course, calm_wind, p, rho_kg_per_m3)
+    assert result.w_prime_violated
+
+
+@pytest.mark.unit
+def test_simulator_w_prime_not_violated(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    """Power at CP should not exhaust W′."""
+    from ttt_strat.simulator import ForwardSimulator
+
+    sim = ForwardSimulator()
+    p = np.full(len(flat_course.s_m), reference_rider.cp_W)
+    result = sim.simulate(reference_rider, flat_course, calm_wind, p, rho_kg_per_m3)
+    assert not result.w_prime_violated
+
+
+@pytest.mark.unit
+def test_simulator_power_callable(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    """ForwardSimulator should accept a callable power profile."""
+    from ttt_strat.simulator import ForwardSimulator
+
+    sim = ForwardSimulator()
+    result = sim.simulate(
+        reference_rider,
+        flat_course,
+        calm_wind,
+        lambda s: np.full_like(s, reference_rider.cp_W),
+        rho_kg_per_m3,
+    )
+    assert math.isfinite(result.time_total_s)
+
+
+@pytest.mark.unit
+def test_simulator_power_wrong_length(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
+    from ttt_strat.simulator import ForwardSimulator
+
+    sim = ForwardSimulator()
+    with pytest.raises(ValueError):
+        sim.simulate(reference_rider, flat_course, calm_wind, np.array([280.0, 280.0]), rho_kg_per_m3)
+
+
+# ---------------------------------------------------------------------------
+# Launch phase energy balance
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_launch_energy_balance(flat_course, reference_rider, rho_kg_per_m3):
+    """Kinetic energy at v_match should be roughly consistent with launch."""
+    from ttt_strat.physics import _rk4_integrate_launch
+
+    m = reference_rider.mass_kg
+    v_match = 2.0
+    t_match, s_match, w_after = _rk4_integrate_launch(
+        f_max_N=reference_rider.f_max_N,
+        theta_rad=float(flat_course.theta_rad[0]),
+        v_w_m_per_s=0.0,
+        crr=reference_rider.crr,
+        mass_kg=m,
+        rho_kg_per_m3=rho_kg_per_m3,
+        cda_m2=reference_rider.cda_m2,
+        l_drive=reference_rider.l_drivetrain,
+        cp_W=reference_rider.cp_W,
+        w_prime_J=reference_rider.w_prime_J,
+        w_prime_bal_J=reference_rider.w_prime_J,
+        dt_s=0.001,
+        v_match_m_per_s=v_match,
+        model_id=DifferentialModel.MODEL_ID,
+    )
+    assert t_match > 0.0
+    assert s_match > 0.0
+    assert 0.0 <= w_after <= reference_rider.w_prime_J
+    # KE at v_match must be <= work done by F_max (ignoring losses)
+    ke_J = 0.5 * m * v_match ** 2
+    work_max_J = reference_rider.f_max_N * s_match
+    assert ke_J <= work_max_J * 1.1  # allow 10 % slack for numerical tolerance
+
+
+# ---------------------------------------------------------------------------
+# GPX loading
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_load_gpx_smoke():
+    from ttt_strat.course import load_gpx
+
+    if not _GPX_PATH.exists():
+        pytest.skip(f"GPX file not found: {_GPX_PATH}")
+
+    data = load_gpx(_GPX_PATH)
+    assert len(data.s_m) > 0
+    assert np.all(np.diff(data.s_m) > 0), "s_m must be monotonically increasing"
+    assert len(data.grade) == len(data.s_m)
+    assert len(data.bearing_rad) == len(data.s_m)
+    assert len(data.surface_factor) == len(data.s_m)
+
+
+@pytest.mark.unit
+def test_load_gpx_and_process():
+    from ttt_strat.course import CourseProcessor, load_gpx
+
+    if not _GPX_PATH.exists():
+        pytest.skip(f"GPX file not found: {_GPX_PATH}")
+
+    data = load_gpx(_GPX_PATH)
+    processed = CourseProcessor().process(data, n_nodes=200, smoothing_length_m=500.0)
+    diffs = np.diff(processed.s_m)
+    assert np.allclose(diffs, diffs[0], rtol=1e-8), "Processed course must have uniform grid"
+    assert len(processed.theta_rad) == 200

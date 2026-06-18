@@ -1,0 +1,11 @@
+numpy
+pandas
+matplotlib
+numba
+scipy
+gpxpy
+
+[dev]
+pytest
+ruff
+cyipopt

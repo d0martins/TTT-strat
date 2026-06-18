@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/ttt_strat/__init__.py
+src/ttt_strat.egg-info/PKG-INFO
+src/ttt_strat.egg-info/SOURCES.txt
+src/ttt_strat.egg-info/dependency_links.txt
+src/ttt_strat.egg-info/requires.txt
+src/ttt_strat.egg-info/top_level.txt
