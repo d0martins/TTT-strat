@@ -36,6 +36,7 @@ class CourseData:
     grade: np.ndarray
     bearing_rad: np.ndarray
     surface_factor: np.ndarray = field(default_factory=lambda: np.ones(1))
+    elev_start_m: float = 0.0
 
 
 @dataclass
@@ -251,4 +252,5 @@ def load_gpx(path: str | Path) -> CourseData:
         grade=grade,
         bearing_rad=bearing,
         surface_factor=np.ones(n),
+        elev_start_m=float(elevs[0]),
     )
