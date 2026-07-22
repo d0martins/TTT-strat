@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.nbc
+*.nbi
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
