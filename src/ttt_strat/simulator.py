@@ -14,8 +14,14 @@ import numpy as np
 from scipy.integrate import simpson
 
 from ttt_strat.course import ProcessedCourse
-from ttt_strat.physics import _rk4_distance_integrate, _rk4_integrate_launch
+from ttt_strat.physics import (
+    _rk4_distance_integrate,
+    _rk4_distance_integrate_caen,
+    _rk4_integrate_launch,
+    _rk4_integrate_launch_caen,
+)
 from ttt_strat.rider import Rider
+from ttt_strat.w_prime import MODEL_CAEN
 from ttt_strat.wind import WindField
 
 
@@ -30,7 +36,7 @@ class SimulationResult:
     v_m_per_s : np.ndarray
         Rider speed at each node [m/s], shape (n,).
     w_prime_bal_J : np.ndarray
-        W′ balance at each node [J], shape (n,).
+        W' balance at each node [J], shape (n,).
     power_W : np.ndarray
         Prescribed crank power at each node [W], shape (n,).
     time_total_s : float
@@ -38,7 +44,7 @@ class SimulationResult:
         Equals launch time ``t_match_s`` plus the distance-domain
         travel time (Eq. 39).
     w_prime_violated : bool
-        ``True`` if W′_bal reached 0 at any point during the
+        ``True`` if W'_bal reached 0 at any point during the
         distance-domain integration (constraint Eq. 32 violated).
     """
 
@@ -75,7 +81,7 @@ class ForwardSimulator:
         Parameters
         ----------
         rider : Rider
-            Rider parameters including CP, W′, and drag area.
+            Rider parameters including CP, W', and drag area.
         course : ProcessedCourse
             Uniform-grid course from ``CourseProcessor.process()``.
         wind : WindField
@@ -92,7 +98,7 @@ class ForwardSimulator:
         Returns
         -------
         SimulationResult
-            Velocity profile, W′ balance, total time, and feasibility flag.
+            Velocity profile, W' balance, total time, and feasibility flag.
 
         Raises
         ------
@@ -115,55 +121,118 @@ class ForwardSimulator:
         # --- Head-wind array ---
         v_w = wind.head_wind_m_per_s(course.bearing_rad)
 
-        # --- Launch phase (time domain) ---
+        # --- Launch phase + distance-domain RK4 ---
         model_id = rider.w_prime_model.MODEL_ID
-        t_match_s, s_match_m, w_after_launch = _rk4_integrate_launch(
-            f_max_N=rider.f_max_N,
-            theta_rad=float(course.theta_rad[0]),
-            v_w_m_per_s=float(v_w[0]),
-            crr=rider.crr,
-            mass_kg=rider.mass_kg,
-            rho_kg_per_m3=rho_kg_per_m3,
-            cda_m2=rider.cda_m2,
-            l_drive=rider.l_drivetrain,
-            cp_W=rider.cp_W,
-            w_prime_J=rider.w_prime_J,
-            w_prime_bal_J=rider.w_prime_J,
-            dt_s=0.01,
-            v_match_m_per_s=v_match_m_per_s,
-            model_id=model_id,
-        )
+        n = len(course.s_m)
 
-        # Find index where distance-domain integration begins
-        i_start = int(np.searchsorted(course.s_m, s_match_m))
-        if i_start >= len(course.s_m):
-            i_start = len(course.s_m) - 1
+        if model_id == MODEL_CAEN:
+            caen = rider.w_prime_model
+            a_f = caen.a_f
+            a_s = caen.a_s
+            tau_f_s = caen.tau_f_s
+            tau_s_s = caen.tau_s_s
+            g_f0 = 0.0
+            g_s0 = 0.0
 
-        # --- Distance-domain RK4 ---
-        s_sub = course.s_m[i_start:]
-        p_sub = p_arr[i_start:]
-        th_sub = course.theta_rad[i_start:]
-        vw_sub = v_w[i_start:]
+            t_match_s, s_match_m, gf_launch, gs_launch = _rk4_integrate_launch_caen(
+                f_max_N=rider.f_max_N,
+                theta_rad=float(course.theta_rad[0]),
+                v_w_m_per_s=float(v_w[0]),
+                crr=rider.crr,
+                mass_kg=rider.mass_kg,
+                rho_kg_per_m3=rho_kg_per_m3,
+                cda_m2=rider.cda_m2,
+                l_drive=rider.l_drivetrain,
+                cp_W=rider.cp_W,
+                w_prime_J=rider.w_prime_J,
+                g_f0_J=g_f0,
+                g_s0_J=g_s0,
+                dt_s=0.01,
+                v_match_m_per_s=v_match_m_per_s,
+                a_f=a_f,
+                a_s=a_s,
+                tau_f_s=tau_f_s,
+                tau_s_s=tau_s_s,
+            )
 
-        v_sub, w_sub, violated = _rk4_distance_integrate(
-            v0_m_per_s=v_match_m_per_s,
-            w0_J=w_after_launch,
-            s_m=s_sub,
-            power_W=p_sub,
-            theta_rad=th_sub,
-            v_w_m_per_s=vw_sub,
-            crr=rider.crr,
-            mass_kg=rider.mass_kg,
-            rho_kg_per_m3=rho_kg_per_m3,
-            cda_m2=rider.cda_m2,
-            l_drive=rider.l_drivetrain,
-            cp_W=rider.cp_W,
-            w_prime_J=rider.w_prime_J,
-            model_id=model_id,
-        )
+            i_start = int(np.searchsorted(course.s_m, s_match_m))
+            if i_start >= n:
+                i_start = n - 1
+
+            s_sub = course.s_m[i_start:]
+            p_sub = p_arr[i_start:]
+            th_sub = course.theta_rad[i_start:]
+            vw_sub = v_w[i_start:]
+
+            v_sub, gf_sub, gs_sub, violated = _rk4_distance_integrate_caen(
+                v0_m_per_s=v_match_m_per_s,
+                g_f0_J=gf_launch,
+                g_s0_J=gs_launch,
+                s_m=s_sub,
+                power_W=p_sub,
+                theta_rad=th_sub,
+                v_w_m_per_s=vw_sub,
+                crr=rider.crr,
+                mass_kg=rider.mass_kg,
+                rho_kg_per_m3=rho_kg_per_m3,
+                cda_m2=rider.cda_m2,
+                l_drive=rider.l_drivetrain,
+                cp_W=rider.cp_W,
+                w_prime_J=rider.w_prime_J,
+                a_f=a_f,
+                a_s=a_s,
+                tau_f_s=tau_f_s,
+                tau_s_s=tau_s_s,
+            )
+
+            w_sub = rider.w_prime_J - gf_sub - gs_sub
+            w_after_launch = rider.w_prime_J - gf_launch - gs_launch
+
+        else:
+            t_match_s, s_match_m, w_after_launch = _rk4_integrate_launch(
+                f_max_N=rider.f_max_N,
+                theta_rad=float(course.theta_rad[0]),
+                v_w_m_per_s=float(v_w[0]),
+                crr=rider.crr,
+                mass_kg=rider.mass_kg,
+                rho_kg_per_m3=rho_kg_per_m3,
+                cda_m2=rider.cda_m2,
+                l_drive=rider.l_drivetrain,
+                cp_W=rider.cp_W,
+                w_prime_J=rider.w_prime_J,
+                w_prime_bal_J=rider.w_prime_J,
+                dt_s=0.01,
+                v_match_m_per_s=v_match_m_per_s,
+                model_id=model_id,
+            )
+
+            i_start = int(np.searchsorted(course.s_m, s_match_m))
+            if i_start >= n:
+                i_start = n - 1
+
+            s_sub = course.s_m[i_start:]
+            p_sub = p_arr[i_start:]
+            th_sub = course.theta_rad[i_start:]
+            vw_sub = v_w[i_start:]
+
+            v_sub, w_sub, violated = _rk4_distance_integrate(
+                v0_m_per_s=v_match_m_per_s,
+                w0_J=w_after_launch,
+                s_m=s_sub,
+                power_W=p_sub,
+                theta_rad=th_sub,
+                v_w_m_per_s=vw_sub,
+                crr=rider.crr,
+                mass_kg=rider.mass_kg,
+                rho_kg_per_m3=rho_kg_per_m3,
+                cda_m2=rider.cda_m2,
+                l_drive=rider.l_drivetrain,
+                cp_W=rider.cp_W,
+                w_prime_J=rider.w_prime_J,
+                model_id=model_id,
+            )
 
         # --- Stitch together full arrays ---
-        n = len(course.s_m)
         v_full = np.empty(n)
         w_full = np.empty(n)
 

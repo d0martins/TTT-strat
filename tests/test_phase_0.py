@@ -1,4 +1,4 @@
-"""Phase 0 unit tests: physics, W′ models, wind, course, and simulator."""
+"""Phase 0 unit tests: physics, W' models, wind, course, and simulator."""
 
 import math
 from pathlib import Path
@@ -8,13 +8,14 @@ import pytest
 
 from ttt_strat.physics import aero_force_N, dv_ds, dw_ds, grav_force_N, rolling_force_N
 from ttt_strat.w_prime.bartram import BartramModel
+from ttt_strat.w_prime.caen import CaenModel
 from ttt_strat.w_prime.differential import DifferentialModel
 from ttt_strat.w_prime.linear import LinearModel
 from ttt_strat.w_prime.skiba import SkibaModel
 
 _GPX_PATH = Path(__file__).parent.parent / "data" / "ttt_strat" / "input" / "stage-3-route.gpx"
 
-_ALL_MODELS = [LinearModel(), SkibaModel(), BartramModel(), DifferentialModel()]
+_ALL_MODELS = [LinearModel(), SkibaModel(), BartramModel(), DifferentialModel(), CaenModel()]
 
 CP_W = 280.0
 W_PRIME_J = 20_000.0
@@ -68,28 +69,66 @@ def test_grav_force_value():
 
 
 # ---------------------------------------------------------------------------
-# W′ models
+# W' models
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
 @pytest.mark.parametrize("model", _ALL_MODELS)
 def test_w_prime_depletion_above_cp(model):
     h = model.h(p_W=CP_W + 50.0, w_prime_bal_J=W_PRIME_BAL_J, cp_W=CP_W, w_prime_J=W_PRIME_J)
-    assert h > 0.0, f"{model.__class__.__name__} should deplete above CP"
+    assert h < 0.0, f"{model.__class__.__name__} should deplete above CP (h = dW'/dt < 0)"
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("model", _ALL_MODELS)
-def test_w_prime_at_cp(model):
+@pytest.mark.parametrize("model,expected_h", [
+    (LinearModel(),       pytest.approx(0.0,            abs=1e-12)),
+    (SkibaModel(),        pytest.approx(5000.0 / 862.0, abs=1e-9)),
+    (BartramModel(),      pytest.approx(0.0,            abs=1e-12)),
+    (DifferentialModel(), pytest.approx(0.0,            abs=1e-12)),
+    # Caen h() uses proportional-split approximation: deficit*(a_f/tau_f + a_s/tau_s)
+    (CaenModel(),         pytest.approx(5000.0 * (0.405 / 33.0 + 0.595 / 965.0), abs=1e-9)),
+])
+def test_w_prime_at_cp(model, expected_h):
+    """At P = CP each model returns its analytically known dW'/dt value.
+
+    LinearModel, DifferentialModel, BartramModel all return 0 exactly.
+    SkibaModel returns (W'₀-W'bal)/τ with τ=546·exp(0)+316=862 s.
+    CaenModel h() returns deficit*(a_f/τ_f + a_s/τ_s) via proportional approximation.
+    """
     h = model.h(p_W=CP_W, w_prime_bal_J=W_PRIME_BAL_J, cp_W=CP_W, w_prime_J=W_PRIME_J)
-    assert abs(h) < 1e-9 or h == 0.0, f"{model.__class__.__name__} h should be 0 at CP"
+    assert h == expected_h
+
+
+@pytest.mark.unit
+def test_caen_h_pools_depletion():
+    """h_pools returns positive dg/dt (deficit grows) when P > CP."""
+    m = CaenModel()
+    g_f_J = m.a_f * (W_PRIME_J - W_PRIME_BAL_J)  # 2025 J
+    g_s_J = m.a_s * (W_PRIME_J - W_PRIME_BAL_J)  # 2975 J
+    dg_f, dg_s = m.h_pools(p_W=CP_W + 50.0, g_f_J=g_f_J, g_s_J=g_s_J, cp_W=CP_W)
+    assert dg_f > 0.0 and dg_s > 0.0
+    # depletion splits proportionally to amplitudes
+    assert abs(dg_f / dg_s - m.a_f / m.a_s) < 1e-9
+
+
+@pytest.mark.unit
+def test_caen_h_pools_recovery():
+    """h_pools returns negative dg/dt (deficit shrinks) when P < CP."""
+    m = CaenModel()
+    g_f_J = m.a_f * (W_PRIME_J - W_PRIME_BAL_J)  # 2025 J
+    g_s_J = m.a_s * (W_PRIME_J - W_PRIME_BAL_J)  # 2975 J
+    dg_f, dg_s = m.h_pools(p_W=CP_W - 50.0, g_f_J=g_f_J, g_s_J=g_s_J, cp_W=CP_W)
+    assert dg_f < 0.0 and dg_s < 0.0
+    # recovery rates follow -g/tau independently per pool
+    assert abs(dg_f - (-g_f_J / m.tau_f_s)) < 1e-9
+    assert abs(dg_s - (-g_s_J / m.tau_s_s)) < 1e-9
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("model", _ALL_MODELS)
 def test_w_prime_recovery_below_cp(model):
     h = model.h(p_W=CP_W - 50.0, w_prime_bal_J=W_PRIME_BAL_J, cp_W=CP_W, w_prime_J=W_PRIME_J)
-    assert h < 0.0, f"{model.__class__.__name__} should recover below CP"
+    assert h > 0.0, f"{model.__class__.__name__} should recover below CP (h = dW'/dt > 0)"
 
 
 @pytest.mark.unit
@@ -99,12 +138,12 @@ def test_w_prime_recovery_stops_at_full():
     h_full = model.h(CP_W - 50.0, W_PRIME_J, CP_W, W_PRIME_J)
     h_half = model.h(CP_W - 50.0, W_PRIME_J * 0.5, CP_W, W_PRIME_J)
     assert abs(h_full) < 1e-9
-    assert h_half < 0.0
+    assert h_half > 0.0
 
 
 @pytest.mark.unit
 def test_dw_ds_sign():
-    """dW′_bal/ds should be negative (depleting) when P > CP."""
+    """dW'_bal/ds should be negative (depleting) when P > CP."""
     result = dw_ds(
         v_m_per_s=10.0,
         p_W=CP_W + 50.0,
@@ -256,7 +295,7 @@ def test_simulator_vs_analytical(flat_course, reference_rider, calm_wind, rho_kg
 
 @pytest.mark.unit
 def test_simulator_w_prime_violated(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
-    """Power far above CP should exhaust W′ and set the violated flag."""
+    """Power far above CP should exhaust W' and set the violated flag."""
     from ttt_strat.simulator import ForwardSimulator
 
     sim = ForwardSimulator()
@@ -267,7 +306,7 @@ def test_simulator_w_prime_violated(flat_course, reference_rider, calm_wind, rho
 
 @pytest.mark.unit
 def test_simulator_w_prime_not_violated(flat_course, reference_rider, calm_wind, rho_kg_per_m3):
-    """Power at CP should not exhaust W′."""
+    """Power at CP should not exhaust W'."""
     from ttt_strat.simulator import ForwardSimulator
 
     sim = ForwardSimulator()
@@ -299,6 +338,32 @@ def test_simulator_power_wrong_length(flat_course, reference_rider, calm_wind, r
     sim = ForwardSimulator()
     with pytest.raises(ValueError):
         sim.simulate(reference_rider, flat_course, calm_wind, np.array([280.0, 280.0]), rho_kg_per_m3)
+
+
+@pytest.mark.unit
+def test_simulator_caen_flat_finite(flat_course, calm_wind, rho_kg_per_m3):
+    """Caen model forward simulation on flat course returns finite, positive time."""
+    import dataclasses
+
+    from ttt_strat.rider import Rider
+    from ttt_strat.simulator import ForwardSimulator
+
+    # Build a reference rider with CaenModel
+    base = Rider(
+        mass_kg=72.0,
+        cp_W=280.0,
+        w_prime_J=20_000.0,
+        cda_m2=0.25,
+        crr=4e-3,
+        l_drivetrain=0.02,
+        w_prime_model=CaenModel(),
+    )
+    sim = ForwardSimulator()
+    p = np.full(len(flat_course.s_m), base.cp_W)
+    result = sim.simulate(base, flat_course, calm_wind, p, rho_kg_per_m3)
+    assert math.isfinite(result.time_total_s)
+    assert result.time_total_s > 0.0
+    assert not result.w_prime_violated
 
 
 # ---------------------------------------------------------------------------

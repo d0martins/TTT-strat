@@ -56,7 +56,7 @@ def flat_course():
 
 @pytest.fixture(scope="session")
 def reference_rider():
-    """Reference rider: CP 280 W, W′ 20 kJ, 72 kg, CdA 0.25 m²."""
+    """Reference rider: CP 280 W, W' 20 kJ, 72 kg, CdA 0.25 m²."""
     from ttt_strat.rider import Rider
     from ttt_strat.w_prime.differential import DifferentialModel
 

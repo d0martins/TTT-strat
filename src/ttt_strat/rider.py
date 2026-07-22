@@ -19,7 +19,7 @@ class Rider:
     cp_W : float
         Critical power CP [W].
     w_prime_J : float
-        Full W′ anaerobic capacity [J].
+        Full W' anaerobic capacity [J].
     cda_m2 : float
         Baseline drag area C_dA⁰ [m²] (Eq. 25).
     crr : float
@@ -27,7 +27,7 @@ class Rider:
     l_drivetrain : float
         Drivetrain loss fraction L [dimensionless] (Eq. 1).
     w_prime_model : WPrimeModel
-        Pluggable W′ depletion/recovery model.  Defaults to
+        Pluggable W' depletion/recovery model.  Defaults to
         ``DifferentialModel`` (production default, Eq. 17).
     f_max_N : float
         Maximum traction force F_max during standing-start launch [N]

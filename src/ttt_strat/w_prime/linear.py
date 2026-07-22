@@ -1,14 +1,21 @@
-"""Linear bidirectional W′ depletion/recovery model (Eq. 12)."""
+"""Linear bidirectional W' depletion/recovery model (Eq. 12)."""
+
+import numba
 
 from ttt_strat.w_prime import MODEL_LINEAR
 
 
-class LinearModel:
-    """Linear bidirectional W′ model (Eq. 12).
+@numba.njit(cache=True)
+def _h_linear(p_W, cp_W):
+    return cp_W - p_W
 
-    The net depletion rate equals ``P − CP`` unconditionally.
+
+class LinearModel:
+    """Linear bidirectional W' model (Eq. 12).
+
+    The W' balance rate of change equals ``CP - P`` unconditionally.
     This gives symmetric depletion above CP and recovery below CP
-    with no dependence on the current W′ balance.
+    with no dependence on the current W' balance.
 
     Attributes
     ----------
@@ -25,22 +32,23 @@ class LinearModel:
         cp_W: float,
         w_prime_J: float,
     ) -> float:
-        """Return net W′ depletion rate h = P − CP [W].
+        """Return W' balance rate of change h = CP - P [W].
 
         Parameters
         ----------
         p_W : float
             Rider power output [W].
         w_prime_bal_J : float
-            Current W′ balance [J] (unused by linear model).
+            Current W' balance [J] (unused by linear model).
         cp_W : float
             Critical power [W].
         w_prime_J : float
-            Full W′ capacity [J] (unused by linear model).
+            Full W' capacity [J] (unused by linear model).
 
         Returns
         -------
         float
-            Net depletion rate [W].
+            W' balance rate of change dW'_bal/dt [W].
+            Negative → depleting (P > CP), positive → recovering (P < CP).
         """
-        return p_W - cp_W
+        return _h_linear(p_W, cp_W)

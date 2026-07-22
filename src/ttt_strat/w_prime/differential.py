@@ -1,15 +1,24 @@
-"""Differential (Skiba 2015) W′ ODE model — production default (Eq. 17)."""
+"""Differential (Skiba 2015) W' ODE model — production default (Eq. 17)."""
+
+import numba
 
 from ttt_strat.w_prime import MODEL_DIFFERENTIAL
 
 
+@numba.njit(cache=True)
+def _h_differential(p_W, w_prime_bal_J, cp_W, w_prime_J):
+    if p_W > cp_W:
+        return cp_W - p_W
+    return (cp_W - p_W) * (1.0 - w_prime_bal_J / w_prime_J)
+
+
 class DifferentialModel:
-    """Differential W′ model (Skiba 2015, Eq. 17) — production default.
+    """Differential W' model (Skiba 2015, Eq. 17) — production default.
 
     A smooth, memoryless ODE whose recovery rate depends on both the
-    current sub-CP drive ``(CP − P)`` and the fractional fill level
-    ``(1 − W′_bal / W′)``.  The model approaches zero recovery rate
-    as the reservoir fills, bounding ``W′_bal`` naturally at ``W′``.
+    current sub-CP drive ``(CP - P)`` and the fractional fill level
+    ``(1 - W'_bal / W')``.  The model approaches zero recovery rate
+    as the reservoir fills, bounding ``W'_bal`` naturally at ``W'``.
 
     Attributes
     ----------
@@ -26,25 +35,23 @@ class DifferentialModel:
         cp_W: float,
         w_prime_J: float,
     ) -> float:
-        """Return net W′ depletion rate [W].
+        """Return net W' depletion rate [W].
 
         Parameters
         ----------
         p_W : float
             Rider power output [W].
         w_prime_bal_J : float
-            Current W′ balance [J].
+            Current W' balance [J].
         cp_W : float
             Critical power [W].
         w_prime_J : float
-            Full W′ capacity [J].
+            Full W' capacity [J].
 
         Returns
         -------
         float
-            Net depletion rate [W].  Positive above CP (draining),
-            negative below CP (recovering).
+            W' balance rate of change dW'_bal/dt [W].
+            Negative above CP (depleting), positive below CP (recovering).
         """
-        if p_W > cp_W:
-            return p_W - cp_W
-        return -(cp_W - p_W) * (1.0 - w_prime_bal_J / w_prime_J)
+        return _h_differential(p_W, w_prime_bal_J, cp_W, w_prime_J)
