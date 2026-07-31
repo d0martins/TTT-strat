@@ -1,1 +1,1 @@
-# TeamTTStrat
+# TTT-strat

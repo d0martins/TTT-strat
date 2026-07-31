@@ -68,6 +68,7 @@ class CourseProcessor:
     """Resample and smooth raw course data onto a uniform distance grid.
 
     Steps follow Section 9 of the specification:
+
     1. Build a uniform ``s`` grid.
     2. Interpolate all channels onto the uniform grid.
     3. Gaussian-smooth ``grade`` and ``bearing_rad`` with the given

@@ -21,6 +21,11 @@ dev = [
     "ruff",
     "cyipopt",
 ]
+docs = [
+    "sphinx",
+    "furo",
+    "myst-parser",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
