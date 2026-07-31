@@ -41,8 +41,12 @@ class SimulationResult:
         Prescribed crank power at each node [W], shape (n,).
     time_total_s : float
         Total elapsed time from standing start to finish [s].
-        Equals launch time ``t_match_s`` plus the distance-domain
+        Equals launch time ``t_launch_s`` plus the distance-domain
         travel time (Eq. 39).
+    t_launch_s : float
+        Duration of the standing-start launch phase [s] — the time spent
+        accelerating from rest to ``v_match`` before the distance-domain
+        integration begins.
     w_prime_violated : bool
         ``True`` if W'_bal reached 0 at any point during the
         distance-domain integration (constraint Eq. 32 violated).
@@ -53,6 +57,7 @@ class SimulationResult:
     w_prime_bal_J: np.ndarray
     power_W: np.ndarray
     time_total_s: float
+    t_launch_s: float
     w_prime_violated: bool
 
 
@@ -255,5 +260,6 @@ class ForwardSimulator:
             w_prime_bal_J=w_full,
             power_W=p_arr,
             time_total_s=time_total_s,
+            t_launch_s=t_match_s,
             w_prime_violated=violated,
         )
