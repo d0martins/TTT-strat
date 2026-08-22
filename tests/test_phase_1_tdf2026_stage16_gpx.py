@@ -1,7 +1,7 @@
 """Phase 1 real-course test: Tour de France 2026 Stage 16 (actual ITT).
 
 Évian-les-Bains -> Thonon-les-Bains, ~26 km, won by Remco Evenepoel in
-32:19 (cyclinguptodate.com, cited in docs/plans/phase-1.md). Unlike Tara
+32:19 (cyclinguptodate.com, cited in docs/plans/phase-1.md). Unlike TARA 2026
 Stage 3, this *is* an ITT — a directly comparable effort type — but
 Evenepoel (self-reported FTP 425 W at ~63.5 kg, Tour Magazin) is nowhere
 near `reference_rider` (280 W / 72 kg), so per the user's instructed
@@ -22,7 +22,7 @@ from ttt_strat.rider import Rider
 from ttt_strat.w_prime.differential import DifferentialModel
 
 _GPX_PATH = Path(__file__).parent.parent / "data" / "ttt_strat" / "input" / "tdf2026_stage16.gpx"
-_EVENEPOEL_WINNING_TIME_S = 32 * 60 + 19  # Remco Evenepoel, stage winner
+_TDF2026_STAGE16_ITT_WINNING_TIME_S = 32 * 60 + 19  # Remco Evenepoel, stage winner
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +50,7 @@ def evenepoel_like_rider() -> Rider:
 
 
 @pytest.fixture(scope="module")
-def tdf_stage16_result(evenepoel_like_rider, calm_wind):
+def tdf2026_stage16_result(evenepoel_like_rider, calm_wind):
     if not _GPX_PATH.exists():
         pytest.skip(f"GPX file not found: {_GPX_PATH}")
 
@@ -73,14 +73,14 @@ def tdf_stage16_result(evenepoel_like_rider, calm_wind):
 
 
 @pytest.mark.solver
-def test_tdf_stage16_feasible(tdf_stage16_result):
-    _opt, res = tdf_stage16_result
+def test_tdf2026_stage16_feasible(tdf2026_stage16_result):
+    _opt, res = tdf2026_stage16_result
     assert np.isfinite(res.time_total_s)
     assert res.time_total_s > 0.0
 
 
 @pytest.mark.solver
-def test_tdf_stage16_ballpark_vs_real_result(tdf_stage16_result):
+def test_tdf2026_stage16_ballpark_vs_real_result(tdf2026_stage16_result):
     """Simulated time is within +-18% of Evenepoel's real result — a plausibility check.
 
     Not a precision validation: `cda_m2`/`crr` are estimated, not
@@ -91,6 +91,6 @@ def test_tdf_stage16_ballpark_vs_real_result(tdf_stage16_result):
     for the bulk-power tolerance in test_phase_1.py, not an arbitrary
     widening.
     """
-    _opt, res = tdf_stage16_result
-    ratio = res.time_total_s / _EVENEPOEL_WINNING_TIME_S
+    _opt, res = tdf2026_stage16_result
+    ratio = res.time_total_s / _TDF2026_STAGE16_ITT_WINNING_TIME_S
     assert 0.82 < ratio < 1.18

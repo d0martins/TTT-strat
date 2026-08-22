@@ -2,7 +2,7 @@
 
 Viareggio -> Massa, ~40-42 km, flat coastal, won by Filippo Ganna in
 45:53 (procyclingstats.com, cited in docs/plans/phase-1.md). Same
-situation as TDF Stage 16: Ganna is far outside `reference_rider`'s
+situation as TdF 2026 Stage 16: Ganna is far outside `reference_rider`'s
 profile and, unlike Evenepoel, hasn't publicly disclosed an FTP figure —
 so `cp_W` here is *estimated* from a published elite-TT power-profiling
 benchmark (~5.8-6.0 W/kg for a ~45 min effort) applied to his known mass,
@@ -23,7 +23,7 @@ from ttt_strat.rider import Rider
 from ttt_strat.w_prime.differential import DifferentialModel
 
 _GPX_PATH = Path(__file__).parent.parent / "data" / "ttt_strat" / "input" / "giro2026_stage10.gpx"
-_GANNA_WINNING_TIME_S = 45 * 60 + 53  # Filippo Ganna, stage winner
+_GIRO2026_STAGE10_ITT_WINNING_TIME_S = 45 * 60 + 53  # Filippo Ganna, stage winner
 
 
 @pytest.fixture(scope="module")
@@ -52,13 +52,13 @@ def ganna_like_rider() -> Rider:
 
 
 @pytest.fixture(scope="module")
-def giro_stage10_result(ganna_like_rider, calm_wind):
+def giro2026_stage10_result(ganna_like_rider, calm_wind):
     if not _GPX_PATH.exists():
         pytest.skip(f"GPX file not found: {_GPX_PATH}")
 
     data = load_gpx(_GPX_PATH)
-    # smoothing_length_m=300 for consistency with the TDF16 test (this
-    # GPX source's grade is much cleaner than TDF16's — only 16/1244 raw
+    # smoothing_length_m=300 for consistency with the TdF16 test (this
+    # GPX source's grade is much cleaner than TdF16's — only 16/1244 raw
     # points exceed 25% grade, vs. 77/2197 there — but 300 m was
     # confirmed to still work well: grade range narrows to a plausible
     # +-6%, matching the stage's known "pan-flat" profile).
@@ -68,19 +68,19 @@ def giro_stage10_result(ganna_like_rider, calm_wind):
 
 
 @pytest.mark.solver
-def test_giro_stage10_feasible(giro_stage10_result):
-    _opt, res = giro_stage10_result
+def test_giro2026_stage10_feasible(giro2026_stage10_result):
+    _opt, res = giro2026_stage10_result
     assert np.isfinite(res.time_total_s)
     assert res.time_total_s > 0.0
 
 
 @pytest.mark.solver
-def test_giro_stage10_ballpark_vs_real_result(giro_stage10_result):
+def test_giro2026_stage10_ballpark_vs_real_result(giro2026_stage10_result):
     """Simulated time is within +-15% of Ganna's real result — a plausibility check.
 
     Wider reasoning applies here even more than the Stage 16 test since
     `cp_W` itself is an estimate, not disclosed data.
     """
-    _opt, res = giro_stage10_result
-    ratio = res.time_total_s / _GANNA_WINNING_TIME_S
+    _opt, res = giro2026_stage10_result
+    ratio = res.time_total_s / _GIRO2026_STAGE10_ITT_WINNING_TIME_S
     assert 0.85 < ratio < 1.15
