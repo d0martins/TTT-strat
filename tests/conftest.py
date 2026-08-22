@@ -67,6 +67,7 @@ def reference_rider():
         cda_m2=0.25,
         crr=4e-3,
         l_drivetrain=0.02,
+        p_max_W=900.0,
         w_prime_model=DifferentialModel(),
         f_max_N=1500.0,
     )

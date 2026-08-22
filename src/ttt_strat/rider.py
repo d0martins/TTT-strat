@@ -26,6 +26,16 @@ class Rider:
         Baseline rolling-resistance coefficient C_rr⁰ [dimensionless] (Eq. 27).
     l_drivetrain : float
         Drivetrain loss fraction L [dimensionless] (Eq. 1).
+    p_max_W : float
+        Absolute power ceiling P_max [W] — the NLP's upper bound on the
+        control (Eq. 31), not a sustainable rating.  It only binds during
+        brief max-effort arcs (a punchy ramp, a bang-bang "spend" interval
+        near the line), the way a sprint ceiling would; for most of a
+        course the optimal power stays well below it, near ``cp_W``.
+        Required (no default) for the same reason ``cp_W``/``w_prime_J``/
+        ``mass_kg`` have none: it is rider-specific and a silent default
+        would produce plausible-looking but physically meaningless
+        optimizer output.
     w_prime_model : WPrimeModel
         Pluggable W' depletion/recovery model.  Defaults to
         ``DifferentialModel`` (production default, Eq. 17).
@@ -40,5 +50,6 @@ class Rider:
     cda_m2: float
     crr: float
     l_drivetrain: float
+    p_max_W: float
     w_prime_model: WPrimeModel = field(default_factory=DifferentialModel)
     f_max_N: float = 1500.0

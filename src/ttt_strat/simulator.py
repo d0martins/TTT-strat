@@ -1,4 +1,4 @@
-"""Forward simulator for a single rider (individual TT).
+"""Forward simulator for a single rider (ITT).
 
 Integrates the equations of motion (Eqs. 9 and 11) over the course
 distance, preceded by a time-domain standing-start launch phase
@@ -59,6 +59,68 @@ class SimulationResult:
     time_total_s: float
     t_launch_s: float
     w_prime_violated: bool
+
+
+def _launch_and_truncate(
+    rider: Rider,
+    course: ProcessedCourse,
+    v_w: np.ndarray,
+    rho_kg_per_m3: float,
+    v_match_m_per_s: float,
+) -> tuple[float, float, float, int]:
+    """Run the generic (2-state) standing-start launch and locate the hand-off node.
+
+    Shared by ``ForwardSimulator.simulate()`` (non-Caen models) and
+    ``IndividualTTOptimizer`` (all models — collocation always uses the
+    generic 2-state ``(v, W'_bal)`` dynamics, Eq. 40, so it hands off from
+    this same launch regardless of ``rider.w_prime_model``).  Keeping this
+    logic in one place avoids the collocation mesh and the forward
+    simulator silently disagreeing on where the distance domain starts.
+
+    Parameters
+    ----------
+    rider : Rider
+        Rider parameters.
+    course : ProcessedCourse
+        Uniform-grid course.
+    v_w : np.ndarray
+        Head-wind component at each course node [m/s], shape (n,).
+    rho_kg_per_m3 : float
+        Air density [kg/m³].
+    v_match_m_per_s : float
+        Hand-off speed from the launch phase [m/s].
+
+    Returns
+    -------
+    tuple
+        ``(t_match_s, s_match_m, w_after_launch_J, i_start)`` — launch
+        duration [s], distance covered during launch [m], W' balance at
+        hand-off [J], and the index of the first course node at or beyond
+        ``s_match_m``.
+    """
+    t_match_s, s_match_m, w_after_launch = _rk4_integrate_launch(
+        f_max_N=rider.f_max_N,
+        theta_rad=float(course.theta_rad[0]),
+        v_w_m_per_s=float(v_w[0]),
+        crr=rider.crr,
+        mass_kg=rider.mass_kg,
+        rho_kg_per_m3=rho_kg_per_m3,
+        cda_m2=rider.cda_m2,
+        l_drive=rider.l_drivetrain,
+        cp_W=rider.cp_W,
+        w_prime_J=rider.w_prime_J,
+        w_prime_bal_J=rider.w_prime_J,
+        dt_s=0.01,
+        v_match_m_per_s=v_match_m_per_s,
+        model_id=rider.w_prime_model.MODEL_ID,
+    )
+
+    n = len(course.s_m)
+    i_start = int(np.searchsorted(course.s_m, s_match_m))
+    if i_start >= n:
+        i_start = n - 1
+
+    return t_match_s, s_match_m, w_after_launch, i_start
 
 
 class ForwardSimulator:
@@ -194,26 +256,9 @@ class ForwardSimulator:
             w_after_launch = rider.w_prime_J - gf_launch - gs_launch
 
         else:
-            t_match_s, s_match_m, w_after_launch = _rk4_integrate_launch(
-                f_max_N=rider.f_max_N,
-                theta_rad=float(course.theta_rad[0]),
-                v_w_m_per_s=float(v_w[0]),
-                crr=rider.crr,
-                mass_kg=rider.mass_kg,
-                rho_kg_per_m3=rho_kg_per_m3,
-                cda_m2=rider.cda_m2,
-                l_drive=rider.l_drivetrain,
-                cp_W=rider.cp_W,
-                w_prime_J=rider.w_prime_J,
-                w_prime_bal_J=rider.w_prime_J,
-                dt_s=0.01,
-                v_match_m_per_s=v_match_m_per_s,
-                model_id=model_id,
+            t_match_s, s_match_m, w_after_launch, i_start = _launch_and_truncate(
+                rider, course, v_w, rho_kg_per_m3, v_match_m_per_s
             )
-
-            i_start = int(np.searchsorted(course.s_m, s_match_m))
-            if i_start >= n:
-                i_start = n - 1
 
             s_sub = course.s_m[i_start:]
             p_sub = p_arr[i_start:]

@@ -13,7 +13,7 @@ from ttt_strat.w_prime.differential import DifferentialModel
 from ttt_strat.w_prime.linear import LinearModel
 from ttt_strat.w_prime.skiba import SkibaModel
 
-_GPX_PATH = Path(__file__).parent.parent / "data" / "ttt_strat" / "input" / "stage-3-route.gpx"
+_GPX_PATH = Path(__file__).parent.parent / "data" / "ttt_strat" / "input" / "tara2026_stage3.gpx"
 
 _ALL_MODELS = [LinearModel(), SkibaModel(), BartramModel(), DifferentialModel(), CaenModel()]
 
@@ -356,6 +356,7 @@ def test_simulator_caen_flat_finite(flat_course, calm_wind, rho_kg_per_m3):
         cda_m2=0.25,
         crr=4e-3,
         l_drivetrain=0.02,
+        p_max_W=900.0,
         w_prime_model=CaenModel(),
     )
     sim = ForwardSimulator()
@@ -433,3 +434,23 @@ def test_load_gpx_and_process():
     diffs = np.diff(processed.s_m)
     assert np.allclose(diffs, diffs[0], rtol=1e-8), "Processed course must have uniform grid"
     assert len(processed.theta_rad) == 200
+
+
+# ---------------------------------------------------------------------------
+# Rider
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_rider_p_max_w_is_required():
+    """Rider() without p_max_W must raise, not silently default."""
+    from ttt_strat.rider import Rider
+
+    with pytest.raises(TypeError):
+        Rider(
+            mass_kg=72.0,
+            cp_W=280.0,
+            w_prime_J=20_000.0,
+            cda_m2=0.25,
+            crr=4e-3,
+            l_drivetrain=0.02,
+        )

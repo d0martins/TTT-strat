@@ -1,5 +1,5 @@
 {
   "name": "TTTstrat",
   "image": "mcr.microsoft.com/devcontainers/python:3.13",
-  "postCreateCommand": "python -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e '.[dev]' && .venv/bin/pip install ipykernel && .venv/bin/python -m ipykernel install --user --name TTTstrat --display-name 'Python (TTTstrat)'"
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y coinor-libipopt-dev && python -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -e '.[dev]' && .venv/bin/pip install ipykernel && .venv/bin/python -m ipykernel install --user --name TTTstrat --display-name 'Python (TTTstrat)'"
 }
