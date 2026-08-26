@@ -1,0 +1,52 @@
+# Phase 1 optimizer notebooks -- index
+
+`../phase1_optimizer.ipynb` (the original single-file notebook, one
+level up in `notebooks/`, ~30 min to run end-to-end) is split into 7
+themed notebooks plus one shared helper module, living together in this
+`phase1_optimization/` folder, so a single verification pass doesn't
+require waiting through unrelated sections. The monolith is kept as-is,
+untouched, as a single-file reference/narrative version.
+
+Each of the 7 notebooks is fully self-contained: it imports
+`phase1_common.py` and rebuilds whatever riders/courses/baselines it
+needs itself, so it runs standalone from a fresh kernel with no
+dependency on any other notebook having run first (deliberate -- no
+cross-notebook caching). One consequence: the cross-check ledger
+notebook ends up as expensive as the original monolith, since it has
+nothing to load from. It's meant to be run rarely (a full sanity pass),
+not for day-to-day iteration -- for that, use whichever of the other 6
+covers what you're actually debugging.
+
+Runtimes below are measured, not estimated -- wall-clock on this
+environment's 2-core machine, one notebook at a time (not run in
+parallel with anything else).
+
+## `phase1_common.py`
+
+Not a notebook -- a plain Python module every notebook below imports
+(`sys.path.insert(0, "."); import phase1_common as pc`). Holds
+everything shared: rider definitions (`reference_rider`,
+`evenepoel_like_rider`, `ganna_like_rider`), `calm_wind`, synthetic-course
+builders (`build_flat_course`, `build_rolling_course`), the real-course
+loader (`load_real_courses`, with each course's own
+`smoothing_length_m`), display-unit helpers (`as_km`/`as_min`/`as_kmh`),
+and every demonstration helper (scheme comparison, backend
+cross-validation, quality-tier perturbation, constrained/post-hoc tier
+runners). A fix to any of these only needs to happen once, here, rather
+than being copy-pasted across notebooks.
+
+## Notebooks
+
+| # | File | Runtime (2-core) | Covers |
+|---|---|---|---|
+| 1 | `phase1_scheme_comparison.ipynb` | ~3.3 min | Section 3: Hermite-Simpson vs trapezoidal collocation scheme, on all 5 courses (synthetic flat/rolling + real Giro10/TdF16/TARA). Produces each course's `res_hs_*`/`opt_hs_*` baseline. |
+| 2 | `phase1_backend_crossvalidation.ipynb` | ~18.0 min | Section 4: SLSQP vs IPOPT agreement, and NLP vs `ForwardSimulator` re-simulation agreement -- the two checks the project actually gates correctness on, instead of the solver's own `success` flag. All 5 courses; rebuilds each baseline itself. |
+| 3 | `phase1_launch_mesh_grading.ipynb` | ~2.1 min | Section 5: why the collocation mesh needs grading (not uniform spacing) near the standing-start launch hand-off, including a deliberately reconstructed uniform-mesh failure case. Synthetic flat course + real Giro10/TdF16. |
+| 4 | `phase1_constrained_smoothing.ipynb` | ~35.8 min -- the most expensive notebook | Section 6: `smooth_constrained`'s power-slew-bounded re-optimization (Eq. 45), stress-tested across 6 input-quality tiers on all 5 courses. Documents genuine SLSQP non-convergence found on TdF16 and TARA under adversarial tiers. |
+| 5 | `phase1_posthoc_smoothing.ipynb` | ~2.2 min | Section 7: `smooth_posthoc`'s cheap box-filter-then-resimulate diagnostic mode, same 6 tiers, all 5 courses, plus the "Eq. 45 vs post-hoc" comparison. |
+| 6 | `phase1_real_course_validation.ipynb` | ~1.4 min | Section 8: ballpark check of optimizer finish times against the real race results the commit cites, all 3 real courses. |
+| 7 | `phase1_cross_check_ledger.ipynb` | ~51.7 min -- run rarely, not for iteration | Section 9: recomputes everything above and prints the full numeric scoreboard against the pytest gates that back it, including which claims are genuine gate failures (TARA's backend/slew-bound checks) rather than hidden. |
+
+**Total if run sequentially: ~115 min** -- but the point of the split is
+that you rarely need all 7; e.g. debugging the post-hoc mode only costs
+notebook 5's ~2 minutes, not the full run.
