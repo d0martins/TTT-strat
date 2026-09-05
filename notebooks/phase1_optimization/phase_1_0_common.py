@@ -10,8 +10,7 @@ Each split notebook does::
 and then calls `pc.build_flat_course()`, `pc.run_scheme_comparison(...)`,
 etc. This module holds nothing notebook-specific (no `plt.show()`-only
 narrative, no cross-notebook state) -- it is pure setup and reusable
-demonstration logic, moved verbatim from the single-notebook version
-(`phase1_optimizer.ipynb`) rather than rewritten.
+demonstration logic.
 """
 
 from __future__ import annotations

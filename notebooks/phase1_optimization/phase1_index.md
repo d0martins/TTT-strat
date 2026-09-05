@@ -1,19 +1,16 @@
 # Phase 1 optimizer notebooks -- index
 
-`../phase1_optimizer.ipynb` (the original single-file notebook, one
-level up in `notebooks/`, ~30 min to run end-to-end) is split into 7
-themed notebooks plus one shared helper module, living together in this
-`phase1_optimization/` folder, so a single verification pass doesn't
-require waiting through unrelated sections. The monolith is kept as-is,
-untouched, as a single-file reference/narrative version.
+This folder holds 7 themed notebooks plus one shared helper module,
+`phase_1_0_common.py`, split by theme so a single verification pass
+doesn't require waiting through unrelated sections.
 
 Each of the 7 notebooks is fully self-contained: it imports
 `phase_1_0_common.py` and rebuilds whatever riders/courses/baselines it
 needs itself, so it runs standalone from a fresh kernel with no
 dependency on any other notebook having run first (deliberate -- no
 cross-notebook caching). One consequence: the cross-check ledger
-notebook ends up as expensive as the original monolith, since it has
-nothing to load from. It's meant to be run rarely (a full sanity pass),
+notebook ends up as expensive as recomputing everything from scratch,
+since it has nothing to load from. It's meant to be run rarely (a full sanity pass),
 not for day-to-day iteration -- for that, use whichever of the other 6
 covers what you're actually debugging.
 
