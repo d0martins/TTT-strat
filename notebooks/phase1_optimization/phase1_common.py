@@ -60,7 +60,7 @@ def as_kmh(speed_m_per_s: np.ndarray | float) -> np.ndarray | float:
 
 
 # ---------------------------------------------------------------------------
-# Riders (Section 2)
+# Riders
 # ---------------------------------------------------------------------------
 
 reference_rider = Rider(
@@ -118,7 +118,7 @@ calm_wind = WindField(w_east_m_per_s=0.1, w_north_m_per_s=0.1)
 
 
 # ---------------------------------------------------------------------------
-# Synthetic courses (Section 3.2/3.3)
+# Synthetic courses
 # ---------------------------------------------------------------------------
 
 def build_flat_course():
@@ -149,7 +149,7 @@ def build_rolling_course():
 
 
 # ---------------------------------------------------------------------------
-# Real GPX courses (Section 2's "Real courses" addition)
+# Real GPX courses
 # ---------------------------------------------------------------------------
 
 GIRO10_SMOOTHING_M = 150.0
@@ -157,9 +157,9 @@ TDF16_SMOOTHING_M = 400.0
 TARA_SMOOTHING_M = 250.0
 
 N_INTERVALS_BASIC = 60    # matches tests/test_phase_1.py's flat_course_slsqp_result fixture
-N_INTERVALS_GIRO10 = 80   # matches Section 5/8's own Giro10 solves
-N_INTERVALS_TDF16 = 60    # matches Section 5/8's own TdF16 solves
-N_INTERVALS_TARA = 80     # matches Section 8's own TARA solve
+N_INTERVALS_GIRO10 = 80   # matches the launch-mesh-grading and real-course-validation notebooks' own Giro10 solves
+N_INTERVALS_TDF16 = 60    # matches the launch-mesh-grading and real-course-validation notebooks' own TdF16 solves
+N_INTERVALS_TARA = 80     # matches the real-course-validation notebook's own TARA solve
 
 
 def load_real_courses() -> dict:
@@ -229,7 +229,7 @@ def build_hs_baseline(rider: Rider, course, wind: WindField, n_intervals: int) -
 
 
 # ---------------------------------------------------------------------------
-# Section 3: scheme comparison (Hermite-Simpson vs trapezoidal)
+# Scheme comparison (Hermite-Simpson vs trapezoidal; design-doc Section 10.2/10.3)
 # ---------------------------------------------------------------------------
 
 def run_scheme_comparison(rider: Rider, course, wind: WindField, n_intervals: int) -> tuple[OptimizationResult, OptimizationResult]:
@@ -280,7 +280,7 @@ def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationRes
 
 
 # ---------------------------------------------------------------------------
-# Section 4: backend cross-validation
+# Backend cross-validation
 # ---------------------------------------------------------------------------
 
 def run_backend_and_sim_crosscheck(rider: Rider, course, wind: WindField, res_hs: OptimizationResult, n_intervals: int, label: str) -> tuple[float, float]:
@@ -391,7 +391,7 @@ def slew_stats(power_W: np.ndarray, s_m: np.ndarray) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Section 6: constrained re-optimization (Eq. 45 / smoothing.py)
+# Constrained re-optimization (design-doc Section 12.1; Eq. 45 / smoothing.py)
 # ---------------------------------------------------------------------------
 
 def run_constrained_tiers(opt: ITTOptimizer, res: OptimizationResult, catastrophic_mode: str, label: str) -> dict:
@@ -435,7 +435,7 @@ def plot_constrained_tiers(res: OptimizationResult, results: dict, title: str) -
 
 
 # ---------------------------------------------------------------------------
-# Section 7: post-hoc mode (Section 12.2)
+# Post-hoc mode (design-doc Section 12.2)
 # ---------------------------------------------------------------------------
 
 def run_posthoc_tiers(rider: Rider, course, wind: WindField, res: OptimizationResult, catastrophic_mode: str, label: str) -> dict:
