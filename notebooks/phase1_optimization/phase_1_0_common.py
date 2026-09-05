@@ -257,13 +257,23 @@ def report_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationR
     return rel_diff
 
 
-def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationResult, title: str) -> None:
-    """Plot power/speed/W'-balance for Hermite-Simpson vs trapezoidal, distance in km, speed in km/h."""
+def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationResult, course, title: str) -> None:
+    """Plot power/speed/W'-balance for Hermite-Simpson vs trapezoidal, distance in km, speed in km/h.
+
+    Each subplot also gets the course's slope [%] on a secondary y-axis, drawn
+    in dark gray (solid where slope is positive, dotted where negative) and
+    z-ordered behind the power/speed/W'_bal traces.
+    """
     fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
+    course_km = as_km(course.s_m)
+    slope_pct = np.tan(course.theta_rad) * 100.0
+    slope_pos = np.where(slope_pct >= 0, slope_pct, np.nan)
+    slope_neg = np.where(slope_pct <= 0, slope_pct, np.nan)
+    slope_color = "0.25"
+
     axes[0].plot(as_km(res_hs.s_m), res_hs.power_W, label="Hermite-Simpson")
     axes[0].plot(as_km(res_trap.s_m), res_trap.power_W, label="Trapezoidal", linestyle="--")
     axes[0].set_ylabel("Power [W]")
-    axes[0].legend()
 
     axes[1].plot(as_km(res_hs.s_m), as_kmh(res_hs.v_m_per_s), label="Hermite-Simpson")
     axes[1].plot(as_km(res_trap.s_m), as_kmh(res_trap.v_m_per_s), label="Trapezoidal", linestyle="--")
@@ -273,6 +283,20 @@ def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationRes
     axes[2].plot(as_km(res_trap.s_m), res_trap.w_prime_bal_J, label="Trapezoidal", linestyle="--")
     axes[2].set_ylabel("W'_bal [J]")
     axes[2].set_xlabel("Distance [km]")
+
+    for i, ax in enumerate(axes):
+        ax2 = ax.twinx()
+        ax2.plot(course_km, slope_pos, color=slope_color, linewidth=1.0, zorder=1,
+                  label="Slope [%]" if i == 0 else None)
+        ax2.plot(course_km, slope_neg, color=slope_color, linewidth=1.0, linestyle=":", zorder=1)
+        ax2.set_ylabel("Slope [%]")
+        ax2.set_zorder(ax.get_zorder() - 1)
+        ax.patch.set_visible(False)
+
+        if i == 0:
+            lines, labels = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines + lines2, labels + labels2)
 
     fig.suptitle(title)
     fig.tight_layout()
