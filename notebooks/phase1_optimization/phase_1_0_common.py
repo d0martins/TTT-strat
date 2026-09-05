@@ -1,11 +1,11 @@
 """Shared setup, riders, courses, and demonstration helpers for the split
-Phase 1 individual-TT optimizer notebooks (`phase1_*.ipynb`).
+Phase 1 individual-TT optimizer notebooks (`phase_1_*.ipynb`).
 
 Each split notebook does::
 
     import sys
     sys.path.insert(0, ".")
-    import phase1_common as pc
+    import phase_1_0_common as pc
 
 and then calls `pc.build_flat_course()`, `pc.run_scheme_comparison(...)`,
 etc. This module holds nothing notebook-specific (no `plt.show()`-only
@@ -30,7 +30,7 @@ from ttt_strat.smoothing import smooth_constrained, smooth_posthoc
 from ttt_strat.w_prime.differential import DifferentialModel
 from ttt_strat.wind import WindField
 
-# This module lives at notebooks/phase1_optimization/phase1_common.py, so
+# This module lives at notebooks/phase1_optimization/phase_1_0_common.py, so
 # its own path (not the importing notebook's cwd, which varies by how
 # it's launched) reliably locates the repo root two levels up.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
