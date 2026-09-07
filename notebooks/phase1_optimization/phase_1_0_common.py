@@ -256,12 +256,13 @@ def report_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationR
     return rel_diff
 
 
-def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationResult, course, title: str) -> None:
+def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationResult, course, title: str, cp_W: float) -> None:
     """Plot power/speed/W'-balance for Hermite-Simpson vs trapezoidal, distance in km, speed in km/h.
 
     Each subplot also gets the course's slope [%] on a secondary y-axis, drawn
     in dark gray (solid where slope is positive, dotted where negative) and
-    z-ordered behind the power/speed/W'_bal traces.
+    z-ordered behind the power/speed/W'_bal traces. The power subplot also gets
+    a dashed horizontal line at the rider's critical power cp_W.
     """
     fig, axes = plt.subplots(3, 1, figsize=(9, 9), sharex=True)
     course_km = as_km(course.s_m)
@@ -272,6 +273,7 @@ def plot_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationRes
 
     axes[0].plot(as_km(res_hs.s_m), res_hs.power_W, label="Hermite-Simpson")
     axes[0].plot(as_km(res_trap.s_m), res_trap.power_W, label="Trapezoidal", linestyle="--")
+    axes[0].axhline(cp_W, color="0.4", linestyle="--", linewidth=1.0, label=f"CP ({cp_W:.0f} W)")
     axes[0].set_ylabel("Power [W]")
 
     axes[1].plot(as_km(res_hs.s_m), as_kmh(res_hs.v_m_per_s), label="Hermite-Simpson")
