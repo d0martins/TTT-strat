@@ -574,8 +574,8 @@ class ITTOptimizer:
             s_new = np.sort(np.concatenate([s_new, insert_s]))
 
         v_opt, w_opt, p_opt, p_mid_opt = problem.unpack(z_opt)
-        collocation_T = problem.objective(z_opt)
-        time_total_s = t_match_s + collocation_T
+        collocation_time_s = problem.objective(z_opt)
+        time_total_s = t_match_s + collocation_time_s
 
         full_power = np.empty(len(self.course.s_m))
         full_power[:i_start] = p_opt[0]
