@@ -113,6 +113,18 @@ class SmoothingResult:
         The original (theoretical bang-bang) time, for comparison —
         smoothing never helps, so ``time_total_s >=
         unsmoothed_time_total_s`` always.
+    success : bool
+        The NLP solver's own convergence flag for "constrained" mode.
+        ``False`` means the solver stopped without converging (e.g.
+        "Iteration limit reached"), so the returned plan may violate the
+        Hermite-Simpson defect constraints and ``time_total_s`` can be
+        physically meaningless (even negative). ``True`` is not proof of
+        a valid plan either - cross-check as for ``OptimizationResult``.
+        For "posthoc" mode no solver runs, so this is always ``True`` and
+        ``w_prime_violated`` is the real correctness signal.
+    message : str
+        The solver's termination message for "constrained" mode; a fixed
+        explanatory note for "posthoc" mode.
     """
 
     mode: str
@@ -121,6 +133,8 @@ class SmoothingResult:
     time_total_s: float
     w_prime_violated: bool
     unsmoothed_time_total_s: float
+    success: bool
+    message: str
 
 
 def smooth_constrained(
@@ -165,7 +179,7 @@ def smooth_constrained(
 
     z0 = problem.pack(unsmoothed.v_m_per_s, unsmoothed.w_prime_bal_J, unsmoothed.power_W, unsmoothed.p_mid_W)
     solver = IPOPTSolver() if optimizer.solver_name == "ipopt" else SLSQPSolver()
-    z_opt, _success, _message = solver.solve(problem, z0)
+    z_opt, success, message = solver.solve(problem, z0)
 
     v_opt, w_opt, p_opt, _p_mid_opt = problem.unpack(z_opt)
     time_total_s = unsmoothed.t_launch_s + problem.objective(z_opt)
@@ -178,6 +192,8 @@ def smooth_constrained(
         time_total_s=time_total_s,
         w_prime_violated=violated,
         unsmoothed_time_total_s=unsmoothed.time_total_s,
+        success=success,
+        message=message,
     )
 
 
@@ -196,6 +212,9 @@ def smooth_posthoc(
     constraint (Eq. 32) — the forward re-simulation reveals this rather
     than hiding it. Use for a quick "how much does smoothing cost"
     estimate; use :func:`smooth_constrained` for the plan to actually ride.
+
+    No solver runs, so the result's ``success`` is always ``True``;
+    ``w_prime_violated`` is this mode's real correctness signal.
 
     Parameters
     ----------
@@ -229,4 +248,6 @@ def smooth_posthoc(
         time_total_s=result.time_total_s,
         w_prime_violated=result.w_prime_violated,
         unsmoothed_time_total_s=unsmoothed.time_total_s,
+        success=True,
+        message="post-hoc smoothing: no solver run; check w_prime_violated",
     )

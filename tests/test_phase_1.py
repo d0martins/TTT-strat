@@ -15,7 +15,7 @@ import pytest
 from scipy.optimize import approx_fprime
 
 from ttt_strat.collocation import CollocationProblem, _rhs_and_jacobian
-from ttt_strat.optimizer import ITTOptimizer
+from ttt_strat.optimizer import ITTOptimizer, SLSQPSolver
 from ttt_strat.rider import Rider
 from ttt_strat.simulator import ForwardSimulator
 from ttt_strat.smoothing import smooth_constrained, smooth_posthoc
@@ -299,6 +299,22 @@ def test_smoothing_constrained_satisfies_slew_bound(flat_course_slsqp_result):
     dP_ds = np.abs(np.diff(sm.power_W) / np.diff(sm.s_m))
     assert np.all(dP_ds <= slew_max * 1.01)
     assert sm.time_total_s >= sm.unsmoothed_time_total_s
+    assert isinstance(sm.success, bool)
+    assert isinstance(sm.message, str)
+
+
+@pytest.mark.solver
+def test_smoothing_constrained_surfaces_nonconvergence(flat_course_slsqp_result, monkeypatch):
+    """A non-converged smooth_constrained solve is flagged, not silently returned (issue #3).
+
+    Forces a real iteration-limit stop by capping SLSQP at one iteration,
+    rather than stubbing the solver's return value.
+    """
+    opt, res = flat_course_slsqp_result
+    monkeypatch.setattr("ttt_strat.smoothing.SLSQPSolver", lambda: SLSQPSolver(maxiter=1))
+    sm = smooth_constrained(opt, res, slew_max_W_per_m=2.0)
+    assert sm.success is False
+    assert sm.message
 
 
 @pytest.mark.solver
@@ -313,3 +329,5 @@ def test_smoothing_posthoc_slower_or_flagged_infeasible(flat_course_slsqp_result
     _opt, res = flat_course_slsqp_result
     sm = smooth_posthoc(reference_rider, flat_course, calm_wind, res, window_nodes=15)
     assert sm.time_total_s >= sm.unsmoothed_time_total_s or sm.w_prime_violated
+    assert sm.success is True  # no solver runs; w_prime_violated is the real signal
+    assert sm.message
