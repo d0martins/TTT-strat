@@ -249,8 +249,8 @@ def run_scheme_comparison(rider: Rider, course, wind: WindField, n_intervals: in
 def report_scheme_comparison(res_hs: OptimizationResult, res_trap: OptimizationResult, label: str) -> float:
     """Print Hermite-Simpson vs trapezoidal finish times and their relative difference."""
     rel_diff = abs(res_hs.time_total_s - res_trap.time_total_s) / res_hs.time_total_s
-    print(f"[{label}] Hermite-Simpson: T = {as_min(res_hs.time_total_s):.3f} min (success={res_hs.success})")
-    print(f"[{label}] Trapezoidal:     T = {as_min(res_trap.time_total_s):.3f} min (success={res_trap.success})")
+    print(f"[{label}] Hermite-Simpson: t_finish = {as_min(res_hs.time_total_s):.3f} min (success={res_hs.success})")
+    print(f"[{label}] Trapezoidal:     t_finish = {as_min(res_trap.time_total_s):.3f} min (success={res_trap.success})")
     print(f"[{label}] Relative difference: {rel_diff:.5f}  "
           f"(test_trapezoidal_fallback_converges_near_hs_result gate: < 0.02)")
     return rel_diff
@@ -319,8 +319,8 @@ def run_backend_and_sim_crosscheck(rider: Rider, course, wind: WindField, res_hs
     opt_ipopt = ITTOptimizer(rider, course, wind, scheme="hermite_simpson", solver="ipopt")
     res_ipopt = opt_ipopt.optimize(n_intervals=n_intervals)
     rel_diff_backend = abs(res_hs.time_total_s - res_ipopt.time_total_s) / res_hs.time_total_s
-    print(f"[{label}] SLSQP: T = {as_min(res_hs.time_total_s):.4f} min  (success={res_hs.success})")
-    print(f"[{label}] IPOPT: T = {as_min(res_ipopt.time_total_s):.4f} min  (success={res_ipopt.success})")
+    print(f"[{label}] SLSQP: t_finish = {as_min(res_hs.time_total_s):.4f} min  (success={res_hs.success})")
+    print(f"[{label}] IPOPT: t_finish = {as_min(res_ipopt.time_total_s):.4f} min  (success={res_ipopt.success})")
     print(f"[{label}] Relative difference: {rel_diff_backend:.6f}  "
           f"(test_ipopt_agrees_with_slsqp_within_tolerance gate: < 1e-3)")
 
@@ -437,7 +437,7 @@ def run_constrained_tiers(opt: ITTOptimizer, res: OptimizationResult, catastroph
         print(
             f"[{label}] {tier_name:12s} input |dP/ds|: p95={in_p95:7.3f} max={in_max:8.2f} W/m  ->  "
             f"output max |dP/ds|={out_max:.4f} W/m (bound {SLEW_MAX_W_PER_M})   "
-            f"T={as_min(sm.time_total_s):.4f} min (unsmoothed {as_min(sm.unsmoothed_time_total_s):.4f} min)   "
+            f"t_finish={as_min(sm.time_total_s):.4f} min (unsmoothed {as_min(sm.unsmoothed_time_total_s):.4f} min)   "
             f"delta={sm.time_total_s - sm.unsmoothed_time_total_s:+7.3f} s"
         )
     return results
@@ -478,7 +478,7 @@ def run_posthoc_tiers(rider: Rider, course, wind: WindField, res: OptimizationRe
         results[tier_name] = (power_pert_full_W, sm, sim_check)
 
         print(
-            f"[{label}] {tier_name:12s} T={as_min(sm.time_total_s):8.4f} min  "
+            f"[{label}] {tier_name:12s} t_finish={as_min(sm.time_total_s):8.4f} min  "
             f"unsmoothed={as_min(sm.unsmoothed_time_total_s):8.4f} min  "
             f"delta={sm.time_total_s - sm.unsmoothed_time_total_s:+7.3f} s   "
             f"w_prime_violated={sm.w_prime_violated!s:5s}  "
