@@ -170,12 +170,6 @@ Time-domain RK4, `physics.py`'s `_rk4_integrate_launch*`, shared by `simulator.p
 Factual notes surfaced while building this table, kept here rather than as separate table rows
 since they're spelling/aliasing issues, not distinct quantities.
 
-- `optimizer._equilibrium_speed_and_relax_length`'s own docstring documents its return as
-  `(v_eq_m_per_s, relax_length_m)`, but the implementation uses the bare names `v_eq` and
-  `l_relax_m` throughout, including at the call site in `ITTOptimizer.optimize`.
-- `CollocationProblem.bounds()` takes bare `v_min`/`v_max` parameters (both in m/s per its own
-  docstring), while the class's constructor stores the same kind of quantity as the properly
-  suffixed `self.v_max_m_per_s`.
 - The Caen bi-exponential constants (`a_f`, `a_s`, `tau_f_s`, `tau_s_s` = 0.405, 0.595, 33.0,
   965.0) are defined independently in three places: as `CaenModel` instance attributes
   (`w_prime/caen.py`), as inline positional literals in `physics.py`'s `dw_ds`/`_launch_dw_dt`,
@@ -190,8 +184,3 @@ since they're spelling/aliasing issues, not distinct quantities.
   implemented; `w_prime/caen.py`'s `_dg_caen`/`_dg_ds_caen` implement the unsmoothed hard-branch
   form (Eq. [X].6-[X].7) directly, matching `physics.py`'s existing hard-branch dispatch pattern
   for the other models.
-- `optimizer.py`'s `collocation_T` local (feeding straight into `time_total_s`) and
-  `collocation.py`'s Eq. 44 comment/docstring for `objective()` used a bare, unsuffixed `T` for
-  total/finish time instead of this table's own `t_finish` convention (line 144 above) - fixed in
-  #2. `collocation.py`'s `_IntervalResult.obj_val` docstring still says "the objective ``T``",
-  the same bare symbol, and was missed by that fix - not yet corrected.
