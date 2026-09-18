@@ -190,3 +190,8 @@ since they're spelling/aliasing issues, not distinct quantities.
   implemented; `w_prime/caen.py`'s `_dg_caen`/`_dg_ds_caen` implement the unsmoothed hard-branch
   form (Eq. [X].6-[X].7) directly, matching `physics.py`'s existing hard-branch dispatch pattern
   for the other models.
+- `optimizer.py`'s `collocation_T` local (feeding straight into `time_total_s`) and
+  `collocation.py`'s Eq. 44 comment/docstring for `objective()` used a bare, unsuffixed `T` for
+  total/finish time instead of this table's own `t_finish` convention (line 144 above) - fixed in
+  #2. `collocation.py`'s `_IntervalResult.obj_val` docstring still says "the objective ``T``",
+  the same bare symbol, and was missed by that fix - not yet corrected.
