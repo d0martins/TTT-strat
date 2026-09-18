@@ -300,7 +300,7 @@ class IPOPTSolver:
     Uses a limited-memory (L-BFGS) quasi-Newton Hessian approximation
     rather than an analytic Hessian of the Lagrangian: deriving/testing
     second derivatives of the HS defect Jacobian is out of scope for an
-    MVP whose acceptance bar is "SLSQP and IPOPT agree to 0.1% on T"
+    MVP whose acceptance bar is "SLSQP and IPOPT agree to 0.1% on t_finish"
     (Phase 1 plan decision 5).
     """
 

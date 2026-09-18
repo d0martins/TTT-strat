@@ -186,7 +186,7 @@ class _IntervalResult:
     Attributes
     ----------
     obj_val : float
-        This interval's contribution to the objective ``T`` [s].
+        This interval's contribution to the objective ``t_finish`` [s].
     obj_grad_local : np.ndarray
         Gradient of ``obj_val`` w.r.t. the interval's 7 local decision
         variables ``(v_k, w_k, P_k, v_{k+1}, w_{k+1}, P_{k+1}, P_mid_k)``
