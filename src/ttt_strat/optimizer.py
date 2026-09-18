@@ -490,7 +490,7 @@ class ITTOptimizer:
             chosen.
         v_max_margin : float, optional
             Multiplier on the local equilibrium speed used to set the
-            solver's numerical-safety ``v_max`` (never below 15 m/s).
+            solver's numerical-safety ``v_max_m_per_s`` (never below 15 m/s).
             Deliberately generous (default 2.5x), not a tight physical
             cap — a bound set too close to a genuinely achievable speed
             reproduces the escape-valve pathology this exists to avoid,
@@ -511,7 +511,7 @@ class ITTOptimizer:
         theta_sub = self.course.theta_rad[i_start:]
         vw_sub = v_w[i_start:]
 
-        # Size the initial mesh and a numerical-safety v_max from the local
+        # Size the initial mesh and a numerical-safety v_max_m_per_s from the local
         # acceleration relaxation length at the hand-off (Phase 1 plan,
         # "adaptive mesh grading via relaxation length") rather than a
         # fixed schedule/bound — L varies ~10x across realistic

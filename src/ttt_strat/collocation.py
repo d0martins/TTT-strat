@@ -480,17 +480,19 @@ class CollocationProblem:
     # see _hermite_simpson_interval)
     # ------------------------------------------------------------------
 
-    def bounds(self, v_min: float = 0.5, v_max: float | None = None) -> list[tuple[float, float]]:
+    def bounds(
+        self, v_min_m_per_s: float = 0.5, v_max_m_per_s: float | None = None
+    ) -> list[tuple[float, float]]:
         """Return scaled ``(lo, hi)`` box bounds for every decision variable.
 
         Parameters
         ----------
-        v_min : float, optional
+        v_min_m_per_s : float, optional
             Generous physical lower speed bound [m/s] to keep the solver
             away from the ``v -> 0`` singularity in ``dv_ds`` (Eq. 9).
             Not part of the OCP statement (Section 6.1) — a
             numerical-stability guard only.
-        v_max : float, optional
+        v_max_m_per_s : float, optional
             Upper speed bound [m/s]. Defaults to ``self.v_max_m_per_s``
             (set at construction) if not overridden here.
 
@@ -499,10 +501,10 @@ class CollocationProblem:
         list of tuple
             One ``(lo, hi)`` pair per entry of the decision vector.
         """
-        if v_max is None:
-            v_max = self.v_max_m_per_s
+        if v_max_m_per_s is None:
+            v_max_m_per_s = self.v_max_m_per_s
         n1 = self.n
-        b = [(v_min / self.v_scale, v_max / self.v_scale)] * n1
+        b = [(v_min_m_per_s / self.v_scale, v_max_m_per_s / self.v_scale)] * n1
         b += [(0.0, self.rider.w_prime_J / self.w_scale)] * n1
         b += [(0.0, self.rider.p_max_W / self.p_scale)] * n1
         if self._pmid_slice is not None:
