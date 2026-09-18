@@ -438,7 +438,8 @@ def run_constrained_tiers(opt: ITTOptimizer, res: OptimizationResult, catastroph
             f"[{label}] {tier_name:12s} input |dP/ds|: p95={in_p95:7.3f} max={in_max:8.2f} W/m  ->  "
             f"output max |dP/ds|={out_max:.4f} W/m (bound {SLEW_MAX_W_PER_M})   "
             f"t_finish={as_min(sm.time_total_s):.4f} min (unsmoothed {as_min(sm.unsmoothed_time_total_s):.4f} min)   "
-            f"delta={sm.time_total_s - sm.unsmoothed_time_total_s:+7.3f} s"
+            f"delta={sm.time_total_s - sm.unsmoothed_time_total_s:+7.3f} s   "
+            f"solver success={sm.success!s:5s} ({sm.message})"
         )
     return results
 
