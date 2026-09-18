@@ -280,7 +280,7 @@ def _hermite_simpson_interval(
     defect_jac_local[:, 3:6] = dD_d_right
     defect_jac_local[:, 6] = dD_d_pmid
 
-    # Eq. 44: this interval's Simpson-quadrature contribution to T.
+    # Eq. 44: this interval's Simpson-quadrature contribution to t_finish.
     obj_val = (ds / 6.0) * (1.0 / v_k + 4.0 / v_mid + 1.0 / v_k1)
 
     coeff = (ds / 6.0) * 4.0 * (-1.0 / v_mid**2)
@@ -604,7 +604,7 @@ class CollocationProblem:
     # ------------------------------------------------------------------
 
     def objective(self, z: np.ndarray) -> float:
-        """Evaluate the discretized finish time (Eq. 44), excluding launch time [s]."""
+        """Evaluate the discretized finish time t_finish (Eq. 44), excluding launch time [s]."""
         return self._evaluate_all(z)["objective"]
 
     def objective_grad(self, z: np.ndarray) -> np.ndarray:
