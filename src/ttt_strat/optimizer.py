@@ -65,7 +65,7 @@ def _equilibrium_speed_and_relax_length(
     Returns
     -------
     tuple of float
-        ``(v_eq_m_per_s, relax_length_m)``.
+        ``(v_eq_m_per_s, l_relax_m)``.
     """
 
     def f(v: float) -> float:
@@ -78,19 +78,19 @@ def _equilibrium_speed_and_relax_length(
     try:
         if f(v_lo) * f(v_hi) > 0.0:
             raise ValueError("no equilibrium speed in search bracket")
-        v_eq = brentq(f, v_lo, v_hi)
+        v_eq_m_per_s = brentq(f, v_lo, v_hi)
     except (ValueError, ZeroDivisionError):
         return 5.0, 100.0
 
     _, _, jac = _rhs_and_jacobian(
-        v_eq, 0.5 * rider.w_prime_J, p_W, theta_rad, v_w_m_per_s, rider.crr, rider.mass_kg,
+        v_eq_m_per_s, 0.5 * rider.w_prime_J, p_W, theta_rad, v_w_m_per_s, rider.crr, rider.mass_kg,
         rho_kg_per_m3, rider.cda_m2, rider.l_drivetrain, rider.cp_W, rider.w_prime_J,
         rider.w_prime_model.MODEL_ID,
     )
     d_dv_dv = jac[0, 0]
     if abs(d_dv_dv) < 1e-8:
-        return v_eq, 200.0
-    return v_eq, 1.0 / abs(d_dv_dv)
+        return v_eq_m_per_s, 200.0
+    return v_eq_m_per_s, 1.0 / abs(d_dv_dv)
 
 
 def _graded_mesh(s0: float, s_end: float, n_intervals: int, l_relax_m: float) -> np.ndarray:
@@ -517,10 +517,10 @@ class ITTOptimizer:
         # fixed schedule/bound — L varies ~10x across realistic
         # rider/course combinations, so a fixed grading would not
         # generalize (docs/plans/phase-1.md).
-        v_eq, l_relax_m = _equilibrium_speed_and_relax_length(
+        v_eq_m_per_s, l_relax_m = _equilibrium_speed_and_relax_length(
             self.rider, float(theta_sub[0]), float(vw_sub[0]), self.rho_kg_per_m3, self.rider.cp_W
         )
-        v_max_m_per_s = max(v_eq * v_max_margin, 15.0)
+        v_max_m_per_s = max(v_eq_m_per_s * v_max_margin, 15.0)
         s_new = _graded_mesh(s_sub[0], s_sub[-1], n_intervals, l_relax_m)
 
         z_opt = None
