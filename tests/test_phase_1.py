@@ -1,10 +1,11 @@
 """Phase 1 solver tests: collocation transcription, ITTOptimizer, smoothing.
 
 Almost everything here is gated behind ``--solver-tests`` (see conftest.py).
-The exception is the "Mesh geometry" section, which is ``@pytest.mark.unit``:
-it checks the mesh the solver would be handed, not the solution, so it needs
-no solve. Tolerances and the gating-on-cross-validation-not-solver-success
-strategy below were decided with the user after empirical investigation — see
+The exception is the "Mesh geometry and constraint structure" section, which
+is ``@pytest.mark.unit``: it checks what the solver would be handed, not the
+solution it returns, so it needs no solve. Tolerances and the
+gating-on-cross-validation-not-solver-success strategy below were decided
+with the user after empirical investigation — see
 ``docs/plans/phase-1.md``'s "Implementation status" section for the full
 writeup (mesh-grading fix, bang-bang launch-burst finding, why raw
 ``result.success`` isn't a reliable gate at the adopted grading).
@@ -42,7 +43,7 @@ _LAUNCH_BURST_NODES = 9
 
 
 # ---------------------------------------------------------------------------
-# Mesh geometry (no solver — see the module docstring)
+# Mesh geometry and constraint structure (no solver — see the module docstring)
 # ---------------------------------------------------------------------------
 
 _MESH_N_INTERVALS = [80, 160, 320, 640]
@@ -151,6 +152,73 @@ def test_graded_mesh_keeps_fine_launch_resolution(gpx_name, reference_rider, cal
         assert np.all(ds_m > 0.0)
 
 
+def _toy_problem(rider, **kwargs):
+    """Small 3-interval Hermite-Simpson problem for constraint-structure checks."""
+    s_m = np.array([0.0, 400.0, 900.0, 1500.0])
+    return CollocationProblem(
+        rider, s_m, np.array([0.01, 0.02, -0.01, 0.0]), np.zeros(4), 1.225,
+        v0_m_per_s=10.0, w0_J=20_000.0, **kwargs,
+    )
+
+
+@pytest.mark.unit
+def test_midpoint_speed_is_bounded(reference_rider):
+    """``v_mid_m_per_s >= v_min`` exists as an inequality row and reads the right value.
+
+    ``v_mid_m_per_s`` is derived (Eq. 41), not a decision variable, so it carries no
+    box bound. It enters the objective as ``4 / v_mid_m_per_s``, and on a wide
+    interval the ``(ds / 8) * delta(dv/ds)`` term can push it large or
+    through zero while both node speeds stay inside their bounds -- which
+    buys a lower reported time for free, and has produced negative finish
+    times (issue #6).
+    """
+    problem = _toy_problem(reference_rider)
+    assert problem.n_ineq_constraints == 2 * problem.n_intervals
+
+    v = np.array([10.0, 11.0, 12.0, 11.5])
+    w = np.array([20_000.0, 19_000.0, 18_000.0, 17_500.0])
+    p_W = np.array([305.0, 300.0, 290.0, 285.0])
+    z = problem.pack(v, w, p_W, np.array([290.0, 295.0, 287.0]))
+
+    v_mid_rows = problem.inequality_constraints(z)[problem.n_intervals:]
+    v_mid_m_per_s = v_mid_rows * problem.v_scale + problem.v_min_m_per_s
+    # On this smooth toy problem v_mid_m_per_s should sit near the node speeds it
+    # interpolates between, not off at some unbounded value.
+    assert np.all(np.isfinite(v_mid_m_per_s))
+    assert np.all(v_mid_m_per_s > np.minimum(v[:-1], v[1:]) - 1.0)
+    assert np.all(v_mid_m_per_s < np.maximum(v[:-1], v[1:]) + 1.0)
+    # The row is the constraint itself: slack = v_mid_m_per_s - v_min.
+    assert v_mid_rows == pytest.approx((v_mid_m_per_s - problem.v_min_m_per_s) / problem.v_scale)
+
+
+@pytest.mark.unit
+def test_midpoint_speed_jacobian_matches_finite_differences(reference_rider):
+    """Analytic ``d(v_mid_m_per_s)/dz`` rows agree with finite differences.
+
+    Evaluated away from ``P = CP``: ``DifferentialModel``'s ``h()`` has a
+    kink there, so a central difference straddling it disagrees with either
+    one-sided derivative (that kink is its own open question, issue #6
+    Section 8).
+    """
+    problem = _toy_problem(reference_rider)
+    v = np.array([10.0, 11.0, 12.0, 11.5])
+    w = np.array([20_000.0, 19_000.0, 18_000.0, 17_500.0])
+    p_W = np.array([305.0, 300.0, 290.0, 285.0])
+    z = problem.pack(v, w, p_W, np.array([290.0, 295.0, 287.0]))
+
+    jac = problem.inequality_jacobian(z)
+    for row in range(problem.n_intervals, 2 * problem.n_intervals):
+        fd = approx_fprime(z, lambda x, r=row: problem.inequality_constraints(x)[r], 1e-7)
+        assert np.max(np.abs(jac[row] - fd)) < 1e-6
+
+
+@pytest.mark.unit
+def test_trapezoidal_has_no_midpoint_constraints(reference_rider):
+    """The trapezoidal scheme has no midpoints, so neither midpoint row exists."""
+    problem = _toy_problem(reference_rider, scheme="trapezoidal")
+    assert problem.n_ineq_constraints == 0
+
+
 # ---------------------------------------------------------------------------
 # CollocationProblem: Hermite-Simpson midpoint/defect formulas (2-interval toy)
 # ---------------------------------------------------------------------------
@@ -200,7 +268,7 @@ def test_hs_midpoint_matches_hand_computation(reference_rider):
         10.0, 20_000.0, 280.0, 10.0, 19_000.0, 280.0, 280.0, 0.0, 0.0, 0.0, 0.0, ds,
         rider_const, reference_rider.w_prime_model.MODEL_ID,
     )
-    assert res.w_mid == pytest.approx(expected_w_mid, rel=1e-9)
+    assert res.w_mid_J == pytest.approx(expected_w_mid, rel=1e-9)
 
 
 @pytest.mark.solver

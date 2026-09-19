@@ -262,7 +262,7 @@ class OptimizationResult:
         unreliable *measure* of one.
     w_prime_violated_forward_sim : bool or None
         Whether W'_bal reached 0 on that replay.  The NLP's node bounds
-        plus the midpoint ``w_mid >= 0`` inequality do not keep W'
+        plus the midpoint ``w_mid_J >= 0`` inequality do not keep W'
         non-negative when the plan is replayed at full course resolution,
         so this is commonly ``True`` on real courses: the plan is then
         optimistic and not directly rideable.
