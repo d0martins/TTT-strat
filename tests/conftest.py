@@ -8,6 +8,7 @@ _COURSE_LENGTH_M = 40_000.0
 _COURSE_N_NODES = 400        # 100 m spacing
 _NEAR_ZERO_GRADE = 1e-3      # 0.1 % — avoids theta_rad = 0 exactly
 _NEAR_ZERO_WIND_M_PER_S = 0.1     # m/s — avoids zero apparent-speed edge cases
+_STRONG_EASTERLY_WIND_M_PER_S = 5.0  # m/s — exercises head-wind sign, unlike the calm fixture
 _NEAR_ZERO_BEARING_RAD = 1e-4  # rad — avoids pure-North singularity in yaw
 
 
@@ -79,6 +80,14 @@ def calm_wind():
     from ttt_strat.wind import WindField
 
     return WindField(w_east_m_per_s=_NEAR_ZERO_WIND_M_PER_S, w_north_m_per_s=_NEAR_ZERO_WIND_M_PER_S)
+
+
+@pytest.fixture(scope="session")
+def strong_easterly_wind():
+    """Non-calm WindField: 5 m/s (about 18 km/h) blowing toward East."""
+    from ttt_strat.wind import WindField
+
+    return WindField(w_east_m_per_s=_STRONG_EASTERLY_WIND_M_PER_S, w_north_m_per_s=0.0)
 
 
 @pytest.fixture(scope="session")

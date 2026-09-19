@@ -225,6 +225,209 @@ def test_course_surface_factor_default(flat_course):
     assert np.all(flat_course.surface_factor == 1.0)
 
 
+# --- Conservation: smoothing must not change net elevation or inflate ascent ---
+
+_GPX_DIR = _GPX_PATH.parent
+_REAL_GPX_NAMES = ["giro2026_stage10.gpx", "tdf2026_stage16.gpx", "tara2026_stage3.gpx"]
+_SMOOTHING_LENGTHS_M = [0.0, 50.0, 250.0, 400.0]
+_NET_ELEVATION_TOL_M = 2.0
+
+
+def _load_real_gpx(name):
+    from ttt_strat.course import load_gpx
+
+    path = _GPX_DIR / name
+    if not path.exists():
+        pytest.skip(f"GPX file not found: {path}")
+    return load_gpx(path)
+
+
+def _raw_net_and_ascent_m(data):
+    """Net elevation change and total ascent of the raw GPX profile [m]."""
+    dz_m = data.grade[:-1] * np.diff(data.s_m)
+    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
+
+
+def _processed_net_and_ascent_m(course):
+    """Net elevation change and total ascent implied by a ProcessedCourse [m]."""
+    dz_m = 0.5 * (np.sin(course.theta_rad[:-1]) + np.sin(course.theta_rad[1:])) * np.diff(course.s_m)
+    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+@pytest.mark.parametrize("smoothing_length_m", _SMOOTHING_LENGTHS_M)
+def test_course_conserves_net_elevation(gpx_name, smoothing_length_m):
+    """Smoothing cannot change net elevation: it is fixed by the endpoints."""
+    from ttt_strat.course import CourseProcessor
+
+    data = _load_real_gpx(gpx_name)
+    course = CourseProcessor().process(data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=smoothing_length_m)
+    raw_net_m, _ = _raw_net_and_ascent_m(data)
+    net_m, _ = _processed_net_and_ascent_m(course)
+    assert abs(net_m - raw_net_m) < _NET_ELEVATION_TOL_M
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+def test_course_smoothing_does_not_inflate_ascent(gpx_name):
+    """Total ascent never exceeds the raw ascent and never grows with smoothing length."""
+    from ttt_strat.course import CourseProcessor
+
+    data = _load_real_gpx(gpx_name)
+    _, raw_ascent_m = _raw_net_and_ascent_m(data)
+    ascents_m = []
+    for smoothing_length_m in _SMOOTHING_LENGTHS_M:
+        course = CourseProcessor().process(
+            data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=smoothing_length_m
+        )
+        ascents_m.append(_processed_net_and_ascent_m(course)[1])
+    assert all(a <= raw_ascent_m for a in ascents_m)
+    assert all(later <= earlier for earlier, later in zip(ascents_m, ascents_m[1:]))
+
+
+@pytest.mark.unit
+def test_course_constant_grade_holds_to_the_edges():
+    """A constant slope stays constant right up to both ends (odd-reflection padding)."""
+    from ttt_strat.course import CourseData, CourseProcessor
+
+    n = 200
+    data = CourseData(
+        s_m=np.linspace(0.0, 10_000.0, n),
+        grade=np.full(n, 0.05),
+        bearing_rad=np.full(n, 1.0),
+        surface_factor=np.ones(n),
+    )
+    course = CourseProcessor().process(data, n_nodes=n, smoothing_length_m=500.0)
+    assert np.allclose(np.tan(course.theta_rad), 0.05, atol=1e-6)
+    net_m, _ = _processed_net_and_ascent_m(course)
+    assert abs(net_m - 0.05 * 10_000.0) < 1.0
+
+
+# --- Bearing: smoothing must respect the [0, 2*pi) branch cut ---
+
+def _north_crossing_course_data():
+    """Course whose bearing sweeps 345 deg -> 20 deg, i.e. through North.
+
+    Returns the ``CourseData`` (bearing wrapped to [0, 2*pi), as ``load_gpx``
+    produces) and the true, unwrapped bearing [rad].
+    """
+    from ttt_strat.course import CourseData
+
+    n = 400
+    true_bearing_rad = np.radians(np.linspace(-15.0, 20.0, n))
+    data = CourseData(
+        s_m=np.linspace(0.0, 40_000.0, n),
+        grade=np.zeros(n),
+        bearing_rad=true_bearing_rad % (2.0 * math.pi),
+        surface_factor=np.ones(n),
+    )
+    return data, true_bearing_rad
+
+
+_EDGE_NODES = 30  # exclude the boundary region, where any smoother is biased toward the end value
+
+
+@pytest.mark.unit
+def test_course_bearing_smoothing_respects_branch_cut():
+    from ttt_strat.course import CourseProcessor
+
+    data, true_bearing_rad = _north_crossing_course_data()
+    course = CourseProcessor().process(data, n_nodes=len(data.s_m), smoothing_length_m=500.0)
+    assert np.all(course.bearing_rad >= 0.0) and np.all(course.bearing_rad < 2.0 * math.pi)
+    interior = slice(_EDGE_NODES, -_EDGE_NODES)
+    err_rad = np.angle(np.exp(1j * (course.bearing_rad - true_bearing_rad)))[interior]
+    assert np.max(np.abs(err_rad)) < math.radians(0.5)
+
+
+@pytest.mark.unit
+def test_course_head_wind_matches_true_bearing(strong_easterly_wind):
+    """Non-calm wind on a North-crossing course: no head/tail-wind sign errors."""
+    from ttt_strat.course import CourseProcessor
+
+    data, true_bearing_rad = _north_crossing_course_data()
+    course = CourseProcessor().process(data, n_nodes=len(data.s_m), smoothing_length_m=500.0)
+    interior = slice(_EDGE_NODES, -_EDGE_NODES)
+    head_wind_m_per_s = strong_easterly_wind.head_wind_m_per_s(course.bearing_rad)[interior]
+    true_head_wind_m_per_s = strong_easterly_wind.head_wind_m_per_s(true_bearing_rad)[interior]
+    assert np.max(np.abs(head_wind_m_per_s - true_head_wind_m_per_s)) < 0.1
+    clear = np.abs(true_head_wind_m_per_s) > 0.2  # away from the genuine zero crossing at due North
+    assert np.all(np.sign(head_wind_m_per_s[clear]) == np.sign(true_head_wind_m_per_s[clear]))
+
+
+_BEARING_SMOOTHING_M = 100.0  # matches the smoothing the real-course tests use
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+def test_course_bearing_smoothing_is_rotation_equivariant(gpx_name):
+    """Rotating every input bearing by d must rotate every output bearing by d.
+
+    Where ``[0, 2*pi)`` is cut is an arbitrary choice of origin, so a correct
+    smoother commutes with rotation.  This is the property the branch-cut bug
+    broke: smoothing the wrapped angle as a plain scalar puts the error
+    wherever the cut happens to fall, so rotating the input moves it
+    somewhere else.  Exact here (~1e-13 deg); up to 180 deg before the fix.
+    """
+    from ttt_strat.course import CourseData, CourseProcessor
+
+    data = _load_real_gpx(gpx_name)
+    n_nodes = min(len(data.s_m), 800)
+    base_rad = CourseProcessor().process(data, n_nodes, _BEARING_SMOOTHING_M).bearing_rad
+
+    for delta_rad in np.linspace(0.0, 2.0 * math.pi, 12, endpoint=False):
+        rotated = CourseData(
+            s_m=data.s_m,
+            grade=data.grade,
+            bearing_rad=(data.bearing_rad + delta_rad) % (2.0 * math.pi),
+            surface_factor=data.surface_factor,
+            elev_start_m=data.elev_start_m,
+        )
+        got_rad = CourseProcessor().process(rotated, n_nodes, _BEARING_SMOOTHING_M).bearing_rad
+        err_rad = np.angle(np.exp(1j * (got_rad - (base_rad + delta_rad))))
+        assert np.max(np.abs(err_rad)) < math.radians(1e-6), f"delta = {math.degrees(delta_rad):.1f} deg"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+def test_course_bearing_matches_unwrapped_reference_where_defined(gpx_name):
+    """Agrees with unwrap-then-smooth wherever the circular mean is well defined.
+
+    An independent check against a different correct smoother, on real GPX.
+    It has to be conditioned: the two disagree by up to 60 deg at 180 deg
+    turnarounds, where the headings inside the kernel cancel and there is no
+    correct average direction.  ``R`` (the resultant length of the smoothed
+    unit vectors) measures exactly that, and ``R >= 0.95`` selects the nodes
+    where the question is well posed -- 61-85% of them at this smoothing
+    length.  Max deviation measured there is 2.4 deg.
+
+    The unwrapped reference is not ground truth and cannot be asserted
+    against unconditionally: at a 180 deg turnaround the two equally valid
+    unwrappings of identical input differ from each other by up to 162 deg.
+    """
+    from scipy.ndimage import gaussian_filter1d
+
+    from ttt_strat.course import CourseProcessor
+
+    data = _load_real_gpx(gpx_name)
+    n_nodes = min(len(data.s_m), 800)
+    course = CourseProcessor().process(data, n_nodes, _BEARING_SMOOTHING_M)
+
+    sigma_nodes = _BEARING_SMOOTHING_M / (course.s_m[1] - course.s_m[0])
+    unwrapped_rad = np.interp(course.s_m, data.s_m, np.unwrap(data.bearing_rad))
+    reference_rad = gaussian_filter1d(unwrapped_rad, sigma=sigma_nodes, mode="nearest")
+
+    resultant = np.hypot(
+        gaussian_filter1d(np.sin(unwrapped_rad), sigma=sigma_nodes, mode="nearest"),
+        gaussian_filter1d(np.cos(unwrapped_rad), sigma=sigma_nodes, mode="nearest"),
+    )
+    well_defined = resultant >= 0.95
+    assert well_defined.mean() > 0.5, "condition excluded too much of the course to be meaningful"
+
+    err_rad = np.angle(np.exp(1j * (course.bearing_rad - reference_rad)))[well_defined]
+    assert np.max(np.abs(err_rad)) < math.radians(5.0)
+
+
 # ---------------------------------------------------------------------------
 # ForwardSimulator
 # ---------------------------------------------------------------------------
