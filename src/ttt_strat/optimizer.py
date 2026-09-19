@@ -21,7 +21,7 @@ from ttt_strat.collocation import CollocationProblem, _rhs_and_jacobian
 from ttt_strat.course import ProcessedCourse
 from ttt_strat.physics import _rk4_distance_integrate, dv_ds
 from ttt_strat.rider import Rider
-from ttt_strat.simulator import _launch_and_truncate
+from ttt_strat.simulator import ForwardSimulator, _launch_and_truncate
 from ttt_strat.wind import WindField
 
 
@@ -215,7 +215,16 @@ class OptimizationResult:
         Index into the original full-resolution course where the
         collocation grid begins (first node at or beyond ``s_match_m``).
     n_intervals : int
-        Number of collocation intervals solved.
+        Number of collocation intervals **actually solved**, i.e. after any
+        mesh refinement (``len(s_m) - 1``).  This used to echo the
+        *requested* count, which hid the fact that each backend refines
+        independently: two backends given the same ``n_intervals`` can
+        return solutions to differently-discretized problems, so a
+        cross-backend comparison that does not check this is not comparing
+        like with like (issue #6).  See ``n_intervals_requested``.
+    n_intervals_requested : int
+        The ``n_intervals`` passed to :meth:`ITTOptimizer.optimize`, before
+        refinement.
     solver : {"slsqp", "ipopt"}
         Which NLP backend produced this result.
     scheme : {"hermite_simpson", "trapezoidal"}
@@ -233,6 +242,30 @@ class OptimizationResult:
         so any value there is safe.  Convenience for feeding the plan
         back into ``ForwardSimulator.simulate()`` for validation/
         smoothing (Phase 1 plan decision 9).
+    time_forward_sim_s : float or None
+        ``full_course_power_W`` replayed through ``ForwardSimulator`` on
+        the true course [s], or ``None`` if ``forward_validate=False``.
+        ``time_total_s`` is a Simpson quadrature over the optimizer's own
+        (coarse, resampled) mesh, so it can report a time no physically
+        realizable trajectory achieves; the replay runs at the course's own
+        resolution and is the better of the two numbers for a plausible
+        plan (issue #6).
+    v_min_forward_sim_m_per_s : float or None
+        Minimum speed reached on that replay [m/s], excluding the launch
+        node.  **This is the quantity to gate on.** Neither time is
+        self-validating: both are Simpson quadratures of ``1/v`` and both
+        become meaningless as ``v`` approaches the integrator's 1e-3 m/s
+        floor, where a single floored node can manufacture hours of
+        phantom time.  A plan whose minimum speed approaches that floor
+        has stalled the rider regardless of what either number says, so
+        the replayed time is a reliable *detector* of a bad plan and an
+        unreliable *measure* of one.
+    w_prime_violated_forward_sim : bool or None
+        Whether W'_bal reached 0 on that replay.  The NLP's node bounds
+        plus the midpoint ``w_mid >= 0`` inequality do not keep W'
+        non-negative when the plan is replayed at full course resolution,
+        so this is commonly ``True`` on real courses: the plan is then
+        optimistic and not directly rideable.
     """
 
     s_m: np.ndarray
@@ -250,6 +283,10 @@ class OptimizationResult:
     message: str
     full_course_s_m: np.ndarray
     full_course_power_W: np.ndarray
+    n_intervals_requested: int = 0
+    time_forward_sim_s: float | None = None
+    v_min_forward_sim_m_per_s: float | None = None
+    w_prime_violated_forward_sim: bool | None = None
 
 
 class Solver(Protocol):
@@ -482,6 +519,7 @@ class ITTOptimizer:
         defect_tol_v_m_per_s: float = 0.05,
         defect_tol_w_J: float = 50.0,
         v_max_margin: float = 2.5,
+        forward_validate: bool = True,
     ) -> OptimizationResult:
         """Solve the NLP and return the optimal power plan.
 
@@ -528,6 +566,15 @@ class ITTOptimizer:
             rather than only guarding against runaway solver iterates;
             see docs/plans/phase-1.md's assessment of why a fixed,
             tightly-tuned bound is unsafe across a wide rider/course range.
+        forward_validate : bool, optional
+            Replay the returned plan through ``ForwardSimulator`` on the
+            true course and record ``time_forward_sim_s``,
+            ``v_min_forward_sim_m_per_s`` and
+            ``w_prime_violated_forward_sim`` (default True). The replay
+            costs milliseconds against a solve that takes tens of seconds,
+            but it is optional because Phase 2's GA/Monte-Carlo search
+            calls ``optimize`` in bulk. Turning it off gives back a result
+            whose reported time has no independent check on it (issue #6).
 
         Returns
         -------
@@ -626,6 +673,28 @@ class ITTOptimizer:
             s_ctrl, p_ctrl = s_new, p_opt
         full_power[i_start:] = np.interp(self.course.s_m[i_start:], s_ctrl, p_ctrl)
 
+        time_forward_sim_s = None
+        v_min_forward_sim_m_per_s = None
+        w_prime_violated_forward_sim = None
+        if forward_validate:
+            # Replaying the plan on the true course is what makes a
+            # pathological solution self-announcing: the collocation
+            # objective is a quadrature over the optimizer's own coarse
+            # mesh and cannot detect a plan that stalls the rider.
+            sim = ForwardSimulator().simulate(
+                self.rider,
+                self.course,
+                self.wind,
+                full_power,
+                self.rho_kg_per_m3,
+                v_match_m_per_s=self.v_match_m_per_s,
+            )
+            time_forward_sim_s = float(sim.time_total_s)
+            # Node 0 is the standing start (v -> 0), so it is never the
+            # informative minimum.
+            v_min_forward_sim_m_per_s = float(np.min(sim.v_m_per_s[1:]))
+            w_prime_violated_forward_sim = bool(sim.w_prime_violated)
+
         return OptimizationResult(
             s_m=s_new,
             power_W=p_opt,
@@ -635,11 +704,15 @@ class ITTOptimizer:
             time_total_s=time_total_s,
             t_launch_s=t_match_s,
             i_start=i_start,
-            n_intervals=n_intervals,
+            n_intervals=len(s_new) - 1,
             solver=self.solver_name,
             scheme=self.scheme,
             success=success,
             message=message,
             full_course_s_m=self.course.s_m,
             full_course_power_W=full_power,
+            n_intervals_requested=n_intervals,
+            time_forward_sim_s=time_forward_sim_s,
+            v_min_forward_sim_m_per_s=v_min_forward_sim_m_per_s,
+            w_prime_violated_forward_sim=w_prime_violated_forward_sim,
         )
