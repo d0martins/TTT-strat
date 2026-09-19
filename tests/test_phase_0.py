@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import REAL_GPX_NAMES, load_real_gpx, net_and_ascent_m, raw_net_and_ascent_m
 from ttt_strat.physics import aero_force_N, dv_ds, dw_ds, grav_force_N, rolling_force_N
 from ttt_strat.w_prime.bartram import BartramModel
 from ttt_strat.w_prime.caen import CaenModel
@@ -227,55 +228,37 @@ def test_course_surface_factor_default(flat_course):
 
 # --- Conservation: smoothing must not change net elevation or inflate ascent ---
 
-_GPX_DIR = _GPX_PATH.parent
-_REAL_GPX_NAMES = ["giro2026_stage10.gpx", "tdf2026_stage16.gpx", "tara2026_stage3.gpx"]
 _SMOOTHING_LENGTHS_M = [0.0, 50.0, 250.0, 400.0]
 _NET_ELEVATION_TOL_M = 2.0
 
 
-def _load_real_gpx(name):
-    from ttt_strat.course import load_gpx
-
-    path = _GPX_DIR / name
-    if not path.exists():
-        pytest.skip(f"GPX file not found: {path}")
-    return load_gpx(path)
-
-
-def _raw_net_and_ascent_m(data):
-    """Net elevation change and total ascent of the raw GPX profile [m]."""
-    dz_m = data.grade[:-1] * np.diff(data.s_m)
-    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
-
-
 def _processed_net_and_ascent_m(course):
     """Net elevation change and total ascent implied by a ProcessedCourse [m]."""
-    dz_m = 0.5 * (np.sin(course.theta_rad[:-1]) + np.sin(course.theta_rad[1:])) * np.diff(course.s_m)
-    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
+    return net_and_ascent_m(course.s_m, course.theta_rad)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
 @pytest.mark.parametrize("smoothing_length_m", _SMOOTHING_LENGTHS_M)
 def test_course_conserves_net_elevation(gpx_name, smoothing_length_m):
     """Smoothing cannot change net elevation: it is fixed by the endpoints."""
     from ttt_strat.course import CourseProcessor
 
-    data = _load_real_gpx(gpx_name)
+    data = load_real_gpx(gpx_name)
     course = CourseProcessor().process(data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=smoothing_length_m)
-    raw_net_m, _ = _raw_net_and_ascent_m(data)
+    raw_net_m, _ = raw_net_and_ascent_m(data)
     net_m, _ = _processed_net_and_ascent_m(course)
     assert abs(net_m - raw_net_m) < _NET_ELEVATION_TOL_M
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
 def test_course_smoothing_does_not_inflate_ascent(gpx_name):
     """Total ascent never exceeds the raw ascent and never grows with smoothing length."""
     from ttt_strat.course import CourseProcessor
 
-    data = _load_real_gpx(gpx_name)
-    _, raw_ascent_m = _raw_net_and_ascent_m(data)
+    data = load_real_gpx(gpx_name)
+    _, raw_ascent_m = raw_net_and_ascent_m(data)
     ascents_m = []
     for smoothing_length_m in _SMOOTHING_LENGTHS_M:
         course = CourseProcessor().process(
@@ -359,7 +342,7 @@ _BEARING_SMOOTHING_M = 100.0  # matches the smoothing the real-course tests use
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
 def test_course_bearing_smoothing_is_rotation_equivariant(gpx_name):
     """Rotating every input bearing by d must rotate every output bearing by d.
 
@@ -371,7 +354,7 @@ def test_course_bearing_smoothing_is_rotation_equivariant(gpx_name):
     """
     from ttt_strat.course import CourseData, CourseProcessor
 
-    data = _load_real_gpx(gpx_name)
+    data = load_real_gpx(gpx_name)
     n_nodes = min(len(data.s_m), 800)
     base_rad = CourseProcessor().process(data, n_nodes, _BEARING_SMOOTHING_M).bearing_rad
 
@@ -389,7 +372,7 @@ def test_course_bearing_smoothing_is_rotation_equivariant(gpx_name):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
 def test_course_bearing_matches_unwrapped_reference_where_defined(gpx_name):
     """Agrees with unwrap-then-smooth wherever the circular mean is well defined.
 
@@ -409,7 +392,7 @@ def test_course_bearing_matches_unwrapped_reference_where_defined(gpx_name):
 
     from ttt_strat.course import CourseProcessor
 
-    data = _load_real_gpx(gpx_name)
+    data = load_real_gpx(gpx_name)
     n_nodes = min(len(data.s_m), 800)
     course = CourseProcessor().process(data, n_nodes, _BEARING_SMOOTHING_M)
 

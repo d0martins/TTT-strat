@@ -104,8 +104,21 @@ def _graded_mesh(s0: float, s_end: float, n_intervals: int, l_relax_m: float) ->
     rider/course/grade combination. The remaining distance is split
     uniformly, as before.
 
-    Starting fraction ``L/32`` and 9 graded steps (rather than a coarser
-    ``L/4``/6 steps tried first) were chosen empirically: on the
+    The ramp **stops once a step would exceed the uniform width that
+    follows it**, so ``n_grade`` is derived rather than fixed. Growing
+    past that width put a single interval of up to 1.3 km in the middle
+    of real terrain a few hundred metres into the course, which is the
+    very pathology grading exists to remove: the NLP then optimizes
+    against a course sampled at three points over that span. Because the
+    old ramp was also capped at 9 steps regardless of ``n_intervals``,
+    refinement never reached the block carrying the error, and the
+    resulting terrain error was frozen under mesh refinement (+25 m of
+    phantom net climb on TARA at every mesh size). Capping the ramp
+    instead makes it converge with the mesh, and leaves the fine ``L/32``
+    launch resolution untouched (issue #6).
+
+    The starting fraction ``L/32`` (rather than the coarser ``L/4``
+    tried first) was chosen empirically and is retained: on the
     flat-course MVP case, tightening from L/4 to L/32 dropped the
     NLP-vs-independent-``ForwardSimulator`` cross-validation error from
     ~0.5% to ~0.09-0.3% (two independent solvers, SLSQP and IPOPT, agreeing
@@ -135,23 +148,41 @@ def _graded_mesh(s0: float, s_end: float, n_intervals: int, l_relax_m: float) ->
     if span <= 0.0 or n_intervals < 10:
         return np.linspace(s0, s_end, n_intervals + 1)
 
-    n_grade = max(2, min(9, n_intervals // 3))
-    widths = l_relax_m * (1.0 / 32.0) * (2.0 ** np.arange(n_grade))  # L/32, L/16, ..., ~8L
-    graded_total = float(np.sum(widths))
-
     # Cap the graded region to a modest fraction of the course so short
     # courses or a large L don't starve the rest of the interval budget.
     max_graded_frac = 0.4
-    if graded_total > max_graded_frac * span:
-        widths = widths * (max_graded_frac * span / graded_total)
-        graded_total = max_graded_frac * span
+    max_n_grade = max(2, n_intervals // 3)  # never let the ramp eat the interval budget
 
-    n_uniform = n_intervals - n_grade
-    remaining = span - graded_total
-    if n_uniform < 1 or remaining <= 0.0:
+    # Grow the ramp one step at a time and keep the longest one whose last
+    # (widest) step still fits inside the uniform width that follows it.
+    # The two depend on each other -- adding a graded step both widens the
+    # ramp and takes an interval away from the tail -- so this is solved by
+    # search rather than in closed form.
+    best: tuple[np.ndarray, float, int] | None = None
+    for n_grade in range(2, max_n_grade + 1):
+        widths = l_relax_m * (1.0 / 32.0) * (2.0 ** np.arange(n_grade))  # L/32, L/16, ...
+        graded_total = float(np.sum(widths))
+        if graded_total > max_graded_frac * span:
+            break
+
+        n_uniform = n_intervals - n_grade
+        remaining = span - graded_total
+        if n_uniform < 1 or remaining <= 0.0:
+            break
+
+        uniform_width = remaining / n_uniform
+        if widths[-1] > uniform_width:
+            break
+        best = (widths, uniform_width, n_uniform)
+
+    if best is None:
+        # L is large relative to the course, or the budget is too small for
+        # even a 2-step ramp: a uniform mesh is the safe fallback (this
+        # function is a conditioning aid and must never raise).
         return np.linspace(s0, s_end, n_intervals + 1)
 
-    uniform_width = remaining / n_uniform
+    widths, uniform_width, n_uniform = best
+    n_grade = len(widths)
     s_new = np.empty(n_intervals + 1)
     s_new[0] = s0
     s_new[1 : n_grade + 1] = s0 + np.cumsum(widths)

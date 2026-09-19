@@ -1,8 +1,10 @@
 """Phase 1 solver tests: collocation transcription, ITTOptimizer, smoothing.
 
-Gated behind ``--solver-tests`` (see conftest.py). Tolerances and the
-gating-on-cross-validation-not-solver-success strategy below were decided
-with the user after empirical investigation — see
+Almost everything here is gated behind ``--solver-tests`` (see conftest.py).
+The exception is the "Mesh geometry" section, which is ``@pytest.mark.unit``:
+it checks the mesh the solver would be handed, not the solution, so it needs
+no solve. Tolerances and the gating-on-cross-validation-not-solver-success
+strategy below were decided with the user after empirical investigation — see
 ``docs/plans/phase-1.md``'s "Implementation status" section for the full
 writeup (mesh-grading fix, bang-bang launch-burst finding, why raw
 ``result.success`` isn't a reliable gate at the adopted grading).
@@ -12,10 +14,16 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import REAL_GPX_NAMES, load_real_gpx, net_and_ascent_m
 from scipy.optimize import approx_fprime
 
 from ttt_strat.collocation import CollocationProblem, _rhs_and_jacobian
-from ttt_strat.optimizer import ITTOptimizer, SLSQPSolver
+from ttt_strat.optimizer import (
+    ITTOptimizer,
+    SLSQPSolver,
+    _equilibrium_speed_and_relax_length,
+    _graded_mesh,
+)
 from ttt_strat.rider import Rider
 from ttt_strat.simulator import ForwardSimulator
 from ttt_strat.smoothing import smooth_constrained, smooth_posthoc
@@ -31,6 +39,116 @@ _N_INTERVALS = 60  # small enough to keep the solver suite's wall time reasonabl
 # (Section 6.3: "spend where speed is lowest") rather than the near-constant
 # power expected over the bulk of a flat course — see docs/plans/phase-1.md.
 _LAUNCH_BURST_NODES = 9
+
+
+# ---------------------------------------------------------------------------
+# Mesh geometry (no solver — see the module docstring)
+# ---------------------------------------------------------------------------
+
+_MESH_N_INTERVALS = [80, 160, 320, 640]
+_MESH_SMOOTHING_M = 100.0  # matches the real-course tests
+
+# The graded mesh is compared against a uniform one only from
+# _MESH_COMPARABLE_N up. At n=80 the tail spacing is 10-16x the course's own
+# resolution, so both meshes alias badly and which one lands closer is
+# arbitrary (measured: graded is better than uniform on giro10, worse on
+# tdf16). That noise is not the defect. The defect was that the error
+# *froze* under refinement, so the load-bearing assertion is the converged
+# one at the finest mesh, where the uncapped ramp still sat at +25 m.
+_MESH_COMPARABLE_N = 160
+_MESH_NET_SLACK_M = 1.0
+_MESH_ASCENT_SLACK_M = 3.0
+_MESH_CONVERGED_NET_M = 0.5
+_MESH_CONVERGED_ASCENT_M = 2.0
+
+
+def _nlp_net_and_ascent_m(s_mesh_m, s_course_m, theta_course_rad):
+    """Net elevation and total ascent of a mesh, exactly as the NLP sees them [m].
+
+    Reproduces the optimizer's own view of the terrain: grade is
+    point-sampled onto the mesh (``optimizer.py``'s ``np.interp``), the
+    Hermite-Simpson midpoint grade is the mean of the two node values
+    (``collocation.py``), and the integral is that scheme's Simpson
+    quadrature. A mesh that misrepresents the course shows up here even
+    though every defect equation on it is satisfied.
+    """
+    theta_rad = np.interp(s_mesh_m, s_course_m, theta_course_rad)
+    theta_mid_rad = 0.5 * (theta_rad[:-1] + theta_rad[1:])
+    ds_m = np.diff(s_mesh_m)
+    dz_m = (ds_m / 6.0) * (
+        np.sin(theta_rad[:-1]) + 4.0 * np.sin(theta_mid_rad) + np.sin(theta_rad[1:])
+    )
+    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
+
+
+def _post_launch_subgrid(gpx_name, rider, wind):
+    """Course sub-grid and relaxation length the optimizer would build its mesh on."""
+    from ttt_strat.course import CourseProcessor
+    from ttt_strat.simulator import _launch_and_truncate
+
+    data = load_real_gpx(gpx_name)
+    course = CourseProcessor().process(data, min(len(data.s_m), 800), _MESH_SMOOTHING_M)
+    v_w_m_per_s = wind.head_wind_m_per_s(course.bearing_rad)
+    *_, i_start = _launch_and_truncate(rider, course, v_w_m_per_s, 1.225, 2.0)
+    s_sub_m = course.s_m[i_start:]
+    theta_sub_rad = course.theta_rad[i_start:]
+    _v_eq, l_relax_m = _equilibrium_speed_and_relax_length(
+        rider, float(theta_sub_rad[0]), float(v_w_m_per_s[i_start]), 1.225, rider.cp_W
+    )
+    return s_sub_m, theta_sub_rad, l_relax_m
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
+def test_graded_mesh_represents_the_course(gpx_name, reference_rider, calm_wind):
+    """The graded mesh must carry the same terrain as the course it is built from.
+
+    Mesh-independence alone does not catch this (issue #6): the uncapped
+    ramp's error lived in a block that refinement never subdivided, so the
+    reported time was stable under refinement while the terrain was wrong by
+    +25 m on TARA. The assertions are therefore that the graded mesh is no
+    worse than a uniform mesh of the same size, and that its error actually
+    converges as the mesh is refined.
+    """
+    s_sub_m, theta_sub_rad, l_relax_m = _post_launch_subgrid(gpx_name, reference_rider, calm_wind)
+    ref_net_m, ref_ascent_m = net_and_ascent_m(s_sub_m, theta_sub_rad)
+
+    graded_net_err_m = graded_ascent_err_m = None
+    for n_intervals in _MESH_N_INTERVALS:
+        graded_m = _graded_mesh(s_sub_m[0], s_sub_m[-1], n_intervals, l_relax_m)
+        uniform_m = np.linspace(s_sub_m[0], s_sub_m[-1], n_intervals + 1)
+
+        g_net_m, g_ascent_m = _nlp_net_and_ascent_m(graded_m, s_sub_m, theta_sub_rad)
+        u_net_m, u_ascent_m = _nlp_net_and_ascent_m(uniform_m, s_sub_m, theta_sub_rad)
+
+        graded_net_err_m = abs(g_net_m - ref_net_m)
+        graded_ascent_err_m = abs(g_ascent_m - ref_ascent_m)
+        if n_intervals < _MESH_COMPARABLE_N:
+            continue
+        assert graded_net_err_m <= abs(u_net_m - ref_net_m) + _MESH_NET_SLACK_M, (
+            f"n={n_intervals}: graded mesh net elevation off by {g_net_m - ref_net_m:+.2f} m "
+            f"vs uniform {u_net_m - ref_net_m:+.2f} m"
+        )
+        assert graded_ascent_err_m <= abs(u_ascent_m - ref_ascent_m) + _MESH_ASCENT_SLACK_M, (
+            f"n={n_intervals}: graded mesh ascent off by {g_ascent_m - ref_ascent_m:+.1f} m "
+            f"vs uniform {u_ascent_m - ref_ascent_m:+.1f} m"
+        )
+
+    # Converged at the finest mesh: the error must vanish with refinement,
+    # which is exactly what the uncapped ramp could not do.
+    assert graded_net_err_m < _MESH_CONVERGED_NET_M
+    assert graded_ascent_err_m < _MESH_CONVERGED_ASCENT_M
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
+def test_graded_mesh_keeps_fine_launch_resolution(gpx_name, reference_rider, calm_wind):
+    """Capping the ramp must not coarsen the launch transient it exists to resolve."""
+    s_sub_m, theta_sub_rad, l_relax_m = _post_launch_subgrid(gpx_name, reference_rider, calm_wind)
+    for n_intervals in _MESH_N_INTERVALS:
+        ds_m = np.diff(_graded_mesh(s_sub_m[0], s_sub_m[-1], n_intervals, l_relax_m))
+        assert ds_m[0] <= l_relax_m / 16.0, f"n={n_intervals}: first interval {ds_m[0]:.2f} m"
+        assert np.all(ds_m > 0.0)
 
 
 # ---------------------------------------------------------------------------
