@@ -355,6 +355,79 @@ def test_course_head_wind_matches_true_bearing(strong_easterly_wind):
     assert np.all(np.sign(head_wind_m_per_s[clear]) == np.sign(true_head_wind_m_per_s[clear]))
 
 
+_BEARING_SMOOTHING_M = 100.0  # matches the smoothing the real-course tests use
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+def test_course_bearing_smoothing_is_rotation_equivariant(gpx_name):
+    """Rotating every input bearing by d must rotate every output bearing by d.
+
+    Where ``[0, 2*pi)`` is cut is an arbitrary choice of origin, so a correct
+    smoother commutes with rotation.  This is the property the branch-cut bug
+    broke: smoothing the wrapped angle as a plain scalar puts the error
+    wherever the cut happens to fall, so rotating the input moves it
+    somewhere else.  Exact here (~1e-13 deg); up to 180 deg before the fix.
+    """
+    from ttt_strat.course import CourseData, CourseProcessor
+
+    data = _load_real_gpx(gpx_name)
+    n_nodes = min(len(data.s_m), 800)
+    base_rad = CourseProcessor().process(data, n_nodes, _BEARING_SMOOTHING_M).bearing_rad
+
+    for delta_rad in np.linspace(0.0, 2.0 * math.pi, 12, endpoint=False):
+        rotated = CourseData(
+            s_m=data.s_m,
+            grade=data.grade,
+            bearing_rad=(data.bearing_rad + delta_rad) % (2.0 * math.pi),
+            surface_factor=data.surface_factor,
+            elev_start_m=data.elev_start_m,
+        )
+        got_rad = CourseProcessor().process(rotated, n_nodes, _BEARING_SMOOTHING_M).bearing_rad
+        err_rad = np.angle(np.exp(1j * (got_rad - (base_rad + delta_rad))))
+        assert np.max(np.abs(err_rad)) < math.radians(1e-6), f"delta = {math.degrees(delta_rad):.1f} deg"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", _REAL_GPX_NAMES)
+def test_course_bearing_matches_unwrapped_reference_where_defined(gpx_name):
+    """Agrees with unwrap-then-smooth wherever the circular mean is well defined.
+
+    An independent check against a different correct smoother, on real GPX.
+    It has to be conditioned: the two disagree by up to 60 deg at 180 deg
+    turnarounds, where the headings inside the kernel cancel and there is no
+    correct average direction.  ``R`` (the resultant length of the smoothed
+    unit vectors) measures exactly that, and ``R >= 0.95`` selects the nodes
+    where the question is well posed -- 61-85% of them at this smoothing
+    length.  Max deviation measured there is 2.4 deg.
+
+    The unwrapped reference is not ground truth and cannot be asserted
+    against unconditionally: at a 180 deg turnaround the two equally valid
+    unwrappings of identical input differ from each other by up to 162 deg.
+    """
+    from scipy.ndimage import gaussian_filter1d
+
+    from ttt_strat.course import CourseProcessor
+
+    data = _load_real_gpx(gpx_name)
+    n_nodes = min(len(data.s_m), 800)
+    course = CourseProcessor().process(data, n_nodes, _BEARING_SMOOTHING_M)
+
+    sigma_nodes = _BEARING_SMOOTHING_M / (course.s_m[1] - course.s_m[0])
+    unwrapped_rad = np.interp(course.s_m, data.s_m, np.unwrap(data.bearing_rad))
+    reference_rad = gaussian_filter1d(unwrapped_rad, sigma=sigma_nodes, mode="nearest")
+
+    resultant = np.hypot(
+        gaussian_filter1d(np.sin(unwrapped_rad), sigma=sigma_nodes, mode="nearest"),
+        gaussian_filter1d(np.cos(unwrapped_rad), sigma=sigma_nodes, mode="nearest"),
+    )
+    well_defined = resultant >= 0.95
+    assert well_defined.mean() > 0.5, "condition excluded too much of the course to be meaningful"
+
+    err_rad = np.angle(np.exp(1j * (course.bearing_rad - reference_rad)))[well_defined]
+    assert np.max(np.abs(err_rad)) < math.radians(5.0)
+
+
 # ---------------------------------------------------------------------------
 # ForwardSimulator
 # ---------------------------------------------------------------------------
