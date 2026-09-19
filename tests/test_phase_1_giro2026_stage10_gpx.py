@@ -57,12 +57,11 @@ def giro2026_stage10_result(ganna_like_rider, calm_wind):
         pytest.skip(f"GPX file not found: {_GPX_PATH}")
 
     data = load_gpx(_GPX_PATH)
-    # smoothing_length_m=300 for consistency with the TdF16 test (this
-    # GPX source's grade is much cleaner than TdF16's — only 16/1244 raw
-    # points exceed 25% grade, vs. 77/2197 there — but 300 m was
-    # confirmed to still work well: grade range narrows to a plausible
-    # +-6%, matching the stage's known "pan-flat" profile).
-    course = CourseProcessor().process(data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=300.0)
+    # smoothing_length_m=100, same as the TdF16 and TARA tests. Elevation is
+    # smoothed before differentiating (issue #5), so grade stays within
+    # about +-3%, matching the stage's known "pan-flat" profile. Measured
+    # ratio to the real result is ~0.94 at both 100 m and 300 m.
+    course = CourseProcessor().process(data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=100.0)
     opt = ITTOptimizer(ganna_like_rider, course, calm_wind, scheme="hermite_simpson", solver="slsqp")
     return opt, opt.optimize(n_intervals=80)  # confirmed ~42s at this setting, no convergence issues
 

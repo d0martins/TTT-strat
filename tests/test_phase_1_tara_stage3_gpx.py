@@ -33,7 +33,7 @@ def tara2026_stage3_result(reference_rider, calm_wind):
         pytest.skip(f"GPX file not found: {_GPX_PATH}")
 
     data = load_gpx(_GPX_PATH)
-    course = CourseProcessor().process(data, n_nodes=len(data.s_m), smoothing_length_m=200.0)
+    course = CourseProcessor().process(data, n_nodes=len(data.s_m), smoothing_length_m=100.0)
     opt = ITTOptimizer(reference_rider, course, calm_wind, scheme="hermite_simpson", solver="slsqp")
     return opt, opt.optimize(n_intervals=80)
 
