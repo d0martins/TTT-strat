@@ -55,20 +55,19 @@ def tdf2026_stage16_result(evenepoel_like_rider, calm_wind):
         pytest.skip(f"GPX file not found: {_GPX_PATH}")
 
     data = load_gpx(_GPX_PATH)
-    # smoothing_length_m=300 (not the Phase 0 default-ish ~100-200 used
-    # elsewhere): this GPX source's raw grade has GPS-elevation-noise
-    # spikes up to +260% even after resampling, still ~48% at 100 m
-    # smoothing (Section 9's own warning about exactly this — "raw
-    # GPS-derived grade... produces a jagged, meaningless power plan").
-    # At 100 m smoothing the optimizer didn't converge in 400 s even
-    # running alone (docs/plans/phase-1.md); at 300 m smoothing
-    # (grade range narrows to a plausible +-23%) it solves in ~25 s.
-    course = CourseProcessor().process(data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=300.0)
+    # smoothing_length_m=100: CourseProcessor smooths elevation and then
+    # differentiates, so net elevation is conserved and the raw GPS noise
+    # no longer needs a heavy kernel to suppress it. (Before that fix this
+    # course needed 300 m to solve at all, because differentiate-then-
+    # resample produced grade spikes up to +260% and +160 m of phantom net
+    # climb; issue #5.) At 100 m the grade range is about -12% to +8%
+    # and the optimizer solves in ~25 s.
+    course = CourseProcessor().process(data, n_nodes=min(len(data.s_m), 800), smoothing_length_m=100.0)
     opt = ITTOptimizer(evenepoel_like_rider, course, calm_wind, scheme="hermite_simpson", solver="slsqp")
     # n_intervals=60, not 80: at 80 intervals this course didn't finish in
-    # 200 s even with the heavier smoothing above (empirically confirmed
-    # during development, not yet root-caused — see docs/plans/phase-1.md).
-    # 60 is confirmed fast (~25 s) and reliable.
+    # 200 s on the pre-#5 terrain (not yet re-measured at 80 since the
+    # course fix — see docs/plans/phase-1.md). 60 is confirmed fast (~25 s)
+    # and reliable.
     return opt, opt.optimize(n_intervals=60)
 
 
@@ -81,16 +80,14 @@ def test_tdf2026_stage16_feasible(tdf2026_stage16_result):
 
 @pytest.mark.solver
 def test_tdf2026_stage16_ballpark_vs_real_result(tdf2026_stage16_result):
-    """Simulated time is within +-18% of Evenepoel's real result — a plausibility check.
+    """Simulated time is within +-15% of Evenepoel's real result — a plausibility check.
 
     Not a precision validation: `cda_m2`/`crr` are estimated, not
     measured, and there's no historical wind data for this stage (same
-    caveat Section 9 already flags generally). +-18%, not +-15%: the
-    measured ratio during development was ~1.155 — this is the same
-    "loosen to match an already-observed, understood value" approach used
-    for the bulk-power tolerance in test_phase_1.py, not an arbitrary
-    widening.
+    caveat Section 9 already flags generally). Measured ratio is ~1.01.
+    The band was +-18% while the course processing corrupted elevation
+    (ratio ~1.155, issue #5); it now matches the Giro test's +-15%.
     """
     _opt, res = tdf2026_stage16_result
     ratio = res.time_total_s / _TDF2026_STAGE16_ITT_WINNING_TIME_S
-    assert 0.82 < ratio < 1.18
+    assert 0.85 < ratio < 1.15

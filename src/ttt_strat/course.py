@@ -24,7 +24,10 @@ class CourseData:
     s_m : np.ndarray
         Cumulative distance along the course [m].
     grade : np.ndarray
-        Road gradient G(s) = rise / run [dimensionless].
+        Road gradient G(s) = rise / run [dimensionless].  ``grade[i]`` is
+        the gradient over the segment ``[s_m[i], s_m[i+1]]``, so elevation
+        is recovered exactly by integrating it; the final entry is a
+        placeholder.
     bearing_rad : np.ndarray
         Road bearing φ_road(s) clockwise from North [rad] (Eq. 19).
     surface_factor : np.ndarray
@@ -64,16 +67,53 @@ class ProcessedCourse:
     smoothing_length_m: float
 
 
+def _smooth_odd_reflect(values: np.ndarray, sigma_nodes: float) -> np.ndarray:
+    """Gaussian-smooth ``values`` with point (odd) reflection at both ends.
+
+    Odd reflection extends the signal about each endpoint as
+    ``2 * v_end - v(mirror)``, so the extension of a linear trend stays
+    linear and the smoothed value at each endpoint equals the raw
+    endpoint value exactly.  ``mode="nearest"`` padding would instead
+    flatten the slope near the ends and shift the endpoint values.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Signal on a uniform grid.
+    sigma_nodes : float
+        Gaussian standard deviation [grid nodes].
+
+    Returns
+    -------
+    np.ndarray
+        Smoothed signal, same length as ``values``.
+    """
+    pad = int(math.ceil(4.0 * sigma_nodes)) + 1
+    padded = np.pad(values, pad, mode="reflect", reflect_type="odd")
+    return gaussian_filter1d(padded, sigma=sigma_nodes, mode="nearest")[pad:-pad]
+
+
 class CourseProcessor:
     """Resample and smooth raw course data onto a uniform distance grid.
 
-    Steps follow Section 9 of the specification:
+    Steps follow Section 9 of the specification, with elevation (not
+    grade) as the smoothed quantity:
 
     1. Build a uniform ``s`` grid.
-    2. Interpolate all channels onto the uniform grid.
-    3. Gaussian-smooth ``grade`` and ``bearing_rad`` with the given
-       length scale.
-    4. Derive ``theta_rad = arctan(grade_smooth)`` (Eq. 7).
+    2. Reconstruct elevation from the raw per-segment grade, and
+       interpolate elevation, bearing and surface onto the uniform grid.
+    3. Gaussian-smooth elevation with the given length scale, then
+       differentiate: ``grade = d(elevation)/ds``.
+    4. Derive ``theta_rad = arctan(grade)`` (Eq. 7).
+    5. Smooth bearing as a unit vector (``sin``/``cos`` components,
+       recombined with ``arctan2``) so the ``[0, 2*pi)`` branch cut does
+       not bias the average.
+
+    Smoothing elevation rather than grade is what conserves the course:
+    interpolating a noisy differentiated signal onto a coarser grid
+    point-samples (aliases) it, whereas elevation is a continuous
+    profile that interpolates faithfully, and its smoothed endpoints
+    equal the raw endpoints, so net elevation change is preserved.
     """
 
     def process(
@@ -101,19 +141,28 @@ class CourseProcessor:
         s_uniform = np.linspace(data.s_m[0], data.s_m[-1], n_nodes)
         ds = s_uniform[1] - s_uniform[0]
 
-        grade_i = np.interp(s_uniform, data.s_m, data.grade)
-        bearing_i = np.interp(s_uniform, data.s_m, data.bearing_rad)
+        # grade[i] is the gradient over [s_i, s_i+1]; the last entry is a
+        # placeholder and does not enter the reconstruction.
+        elevation_raw_m = data.elev_start_m + np.concatenate(
+            ([0.0], np.cumsum(data.grade[:-1] * np.diff(data.s_m)))
+        )
+        elevation_i_m = np.interp(s_uniform, data.s_m, elevation_raw_m)
+        bearing_sin_i = np.interp(s_uniform, data.s_m, np.sin(data.bearing_rad))
+        bearing_cos_i = np.interp(s_uniform, data.s_m, np.cos(data.bearing_rad))
         surface_i = np.interp(s_uniform, data.s_m, data.surface_factor)
 
         if smoothing_length_m > 0.0 and ds > 0.0:
-            sigma = smoothing_length_m / ds
-            grade_smooth = gaussian_filter1d(grade_i, sigma=sigma, mode="nearest")
-            bearing_smooth = gaussian_filter1d(bearing_i, sigma=sigma, mode="nearest")
+            sigma_nodes = smoothing_length_m / ds
+            elevation_smooth_m = _smooth_odd_reflect(elevation_i_m, sigma_nodes)
+            bearing_sin_i = gaussian_filter1d(bearing_sin_i, sigma=sigma_nodes, mode="nearest")
+            bearing_cos_i = gaussian_filter1d(bearing_cos_i, sigma=sigma_nodes, mode="nearest")
         else:
-            grade_smooth = grade_i
-            bearing_smooth = bearing_i
+            elevation_smooth_m = elevation_i_m
 
-        theta_rad = np.arctan(grade_smooth)
+        bearing_smooth = np.arctan2(bearing_sin_i, bearing_cos_i) % (2.0 * math.pi)
+        # A tiny negative angle wraps to exactly 2*pi in floating point; fold it to 0.
+        bearing_smooth[bearing_smooth >= 2.0 * math.pi] = 0.0
+        theta_rad = np.arctan(np.gradient(elevation_smooth_m, s_uniform))
 
         return ProcessedCourse(
             s_m=s_uniform,
