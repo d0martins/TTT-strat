@@ -1,21 +1,39 @@
 """Phase 1 solver tests: collocation transcription, ITTOptimizer, smoothing.
 
-Gated behind ``--solver-tests`` (see conftest.py). Tolerances and the
+Almost everything here is gated behind ``--solver-tests`` (see conftest.py).
+The exception is the "Mesh geometry and constraint structure" section, which
+is ``@pytest.mark.unit``: it checks what the solver would be handed, not the
+solution it returns, so it needs no solve. Tolerances and the
 gating-on-cross-validation-not-solver-success strategy below were decided
 with the user after empirical investigation — see
 ``docs/plans/phase-1.md``'s "Implementation status" section for the full
 writeup (mesh-grading fix, bang-bang launch-burst finding, why raw
 ``result.success`` isn't a reliable gate at the adopted grading).
+
+Cross-validation remains the correctness gate, but part of why
+``result.success`` carried no information at all was self-inflicted and is
+now fixed: SLSQP's ``ftol`` was unreachable on this problem, so every solve
+the project had ever run exited "Iteration limit reached", and IPOPT's
+status 1 (``Solved_To_Acceptable_Level``) was classified as failure
+(issue #6, item 7.6).
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import REAL_GPX_NAMES, load_real_gpx, net_and_ascent_m
 from scipy.optimize import approx_fprime
 
 from ttt_strat.collocation import CollocationProblem, _rhs_and_jacobian
-from ttt_strat.optimizer import ITTOptimizer, SLSQPSolver
+from ttt_strat.optimizer import (
+    IPOPTSolver,
+    ITTOptimizer,
+    SLSQPSolver,
+    _equilibrium_speed_and_relax_length,
+    _graded_mesh,
+    _ipopt_status_is_success,
+)
 from ttt_strat.rider import Rider
 from ttt_strat.simulator import ForwardSimulator
 from ttt_strat.smoothing import smooth_constrained, smooth_posthoc
@@ -26,11 +44,233 @@ from ttt_strat.w_prime.skiba import SkibaModel
 
 _N_INTERVALS = 60  # small enough to keep the solver suite's wall time reasonable
 
+# SLSQP's default ftol, duplicated here on purpose: the point of
+# test_solver_defaults_are_attainable is to fail if the default drifts back to
+# something unreachable, which it could not do if it read the default itself.
+_ATTAINABLE_SLSQP_FTOL = 1e-5
+_UNREACHABLE_SLSQP_FTOL = 1e-9  # what shipped before issue #6 item 7.6
+
 # Number of collocation nodes at the start of a solve, graded near the
 # launch hand-off, that legitimately show a brief above-CP bang-bang burst
 # (Section 6.3: "spend where speed is lowest") rather than the near-constant
 # power expected over the bulk of a flat course — see docs/plans/phase-1.md.
 _LAUNCH_BURST_NODES = 9
+
+
+# ---------------------------------------------------------------------------
+# Mesh geometry and constraint structure (no solver — see the module docstring)
+# ---------------------------------------------------------------------------
+
+_MESH_N_INTERVALS = [80, 160, 320, 640]
+_MESH_SMOOTHING_M = 100.0  # matches the real-course tests
+
+# The graded mesh is compared against a uniform one only from
+# _MESH_COMPARABLE_N up. At n=80 the tail spacing is 10-16x the course's own
+# resolution, so both meshes alias badly and which one lands closer is
+# arbitrary (measured: graded is better than uniform on giro10, worse on
+# tdf16). That noise is not the defect. The defect was that the error
+# *froze* under refinement, so the load-bearing assertion is the converged
+# one at the finest mesh, where the uncapped ramp still sat at +25 m.
+_MESH_COMPARABLE_N = 160
+_MESH_NET_SLACK_M = 1.0
+_MESH_ASCENT_SLACK_M = 3.0
+_MESH_CONVERGED_NET_M = 0.5
+_MESH_CONVERGED_ASCENT_M = 2.0
+
+
+def _nlp_net_and_ascent_m(s_mesh_m, s_course_m, theta_course_rad):
+    """Net elevation and total ascent of a mesh, exactly as the NLP sees them [m].
+
+    Reproduces the optimizer's own view of the terrain: grade is
+    point-sampled onto the mesh (``optimizer.py``'s ``np.interp``), the
+    Hermite-Simpson midpoint grade is the mean of the two node values
+    (``collocation.py``), and the integral is that scheme's Simpson
+    quadrature. A mesh that misrepresents the course shows up here even
+    though every defect equation on it is satisfied.
+    """
+    theta_rad = np.interp(s_mesh_m, s_course_m, theta_course_rad)
+    theta_mid_rad = 0.5 * (theta_rad[:-1] + theta_rad[1:])
+    ds_m = np.diff(s_mesh_m)
+    dz_m = (ds_m / 6.0) * (
+        np.sin(theta_rad[:-1]) + 4.0 * np.sin(theta_mid_rad) + np.sin(theta_rad[1:])
+    )
+    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
+
+
+def _post_launch_subgrid(gpx_name, rider, wind):
+    """Course sub-grid and relaxation length the optimizer would build its mesh on."""
+    from ttt_strat.course import CourseProcessor
+    from ttt_strat.simulator import _launch_and_truncate
+
+    data = load_real_gpx(gpx_name)
+    course = CourseProcessor().process(data, min(len(data.s_m), 800), _MESH_SMOOTHING_M)
+    v_w_m_per_s = wind.head_wind_m_per_s(course.bearing_rad)
+    *_, i_start = _launch_and_truncate(rider, course, v_w_m_per_s, 1.225, 2.0)
+    s_sub_m = course.s_m[i_start:]
+    theta_sub_rad = course.theta_rad[i_start:]
+    _v_eq, l_relax_m = _equilibrium_speed_and_relax_length(
+        rider, float(theta_sub_rad[0]), float(v_w_m_per_s[i_start]), 1.225, rider.cp_W
+    )
+    return s_sub_m, theta_sub_rad, l_relax_m
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
+def test_graded_mesh_represents_the_course(gpx_name, reference_rider, calm_wind):
+    """The graded mesh must carry the same terrain as the course it is built from.
+
+    Mesh-independence alone does not catch this (issue #6): the uncapped
+    ramp's error lived in a block that refinement never subdivided, so the
+    reported time was stable under refinement while the terrain was wrong by
+    +25 m on TARA. The assertions are therefore that the graded mesh is no
+    worse than a uniform mesh of the same size, and that its error actually
+    converges as the mesh is refined.
+    """
+    s_sub_m, theta_sub_rad, l_relax_m = _post_launch_subgrid(gpx_name, reference_rider, calm_wind)
+    ref_net_m, ref_ascent_m = net_and_ascent_m(s_sub_m, theta_sub_rad)
+
+    graded_net_err_m = graded_ascent_err_m = None
+    for n_intervals in _MESH_N_INTERVALS:
+        graded_m = _graded_mesh(s_sub_m[0], s_sub_m[-1], n_intervals, l_relax_m)
+        uniform_m = np.linspace(s_sub_m[0], s_sub_m[-1], n_intervals + 1)
+
+        g_net_m, g_ascent_m = _nlp_net_and_ascent_m(graded_m, s_sub_m, theta_sub_rad)
+        u_net_m, u_ascent_m = _nlp_net_and_ascent_m(uniform_m, s_sub_m, theta_sub_rad)
+
+        graded_net_err_m = abs(g_net_m - ref_net_m)
+        graded_ascent_err_m = abs(g_ascent_m - ref_ascent_m)
+        if n_intervals < _MESH_COMPARABLE_N:
+            continue
+        assert graded_net_err_m <= abs(u_net_m - ref_net_m) + _MESH_NET_SLACK_M, (
+            f"n={n_intervals}: graded mesh net elevation off by {g_net_m - ref_net_m:+.2f} m "
+            f"vs uniform {u_net_m - ref_net_m:+.2f} m"
+        )
+        assert graded_ascent_err_m <= abs(u_ascent_m - ref_ascent_m) + _MESH_ASCENT_SLACK_M, (
+            f"n={n_intervals}: graded mesh ascent off by {g_ascent_m - ref_ascent_m:+.1f} m "
+            f"vs uniform {u_ascent_m - ref_ascent_m:+.1f} m"
+        )
+
+    # Converged at the finest mesh: the error must vanish with refinement,
+    # which is exactly what the uncapped ramp could not do.
+    assert graded_net_err_m < _MESH_CONVERGED_NET_M
+    assert graded_ascent_err_m < _MESH_CONVERGED_ASCENT_M
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("gpx_name", REAL_GPX_NAMES)
+def test_graded_mesh_keeps_fine_launch_resolution(gpx_name, reference_rider, calm_wind):
+    """Capping the ramp must not coarsen the launch transient it exists to resolve."""
+    s_sub_m, theta_sub_rad, l_relax_m = _post_launch_subgrid(gpx_name, reference_rider, calm_wind)
+    for n_intervals in _MESH_N_INTERVALS:
+        ds_m = np.diff(_graded_mesh(s_sub_m[0], s_sub_m[-1], n_intervals, l_relax_m))
+        assert ds_m[0] <= l_relax_m / 16.0, f"n={n_intervals}: first interval {ds_m[0]:.2f} m"
+        assert np.all(ds_m > 0.0)
+
+
+def _toy_problem(rider, **kwargs):
+    """Small 3-interval Hermite-Simpson problem for constraint-structure checks."""
+    s_m = np.array([0.0, 400.0, 900.0, 1500.0])
+    return CollocationProblem(
+        rider, s_m, np.array([0.01, 0.02, -0.01, 0.0]), np.zeros(4), 1.225,
+        v0_m_per_s=10.0, w0_J=20_000.0, **kwargs,
+    )
+
+
+@pytest.mark.unit
+def test_midpoint_speed_is_bounded(reference_rider):
+    """``v_mid_m_per_s >= v_min`` exists as an inequality row and reads the right value.
+
+    ``v_mid_m_per_s`` is derived (Eq. 41), not a decision variable, so it carries no
+    box bound. It enters the objective as ``4 / v_mid_m_per_s``, and on a wide
+    interval the ``(ds / 8) * delta(dv/ds)`` term can push it large or
+    through zero while both node speeds stay inside their bounds -- which
+    buys a lower reported time for free, and has produced negative finish
+    times (issue #6).
+    """
+    problem = _toy_problem(reference_rider)
+    assert problem.n_ineq_constraints == 2 * problem.n_intervals
+
+    v = np.array([10.0, 11.0, 12.0, 11.5])
+    w = np.array([20_000.0, 19_000.0, 18_000.0, 17_500.0])
+    p_W = np.array([305.0, 300.0, 290.0, 285.0])
+    z = problem.pack(v, w, p_W, np.array([290.0, 295.0, 287.0]))
+
+    v_mid_rows = problem.inequality_constraints(z)[problem.n_intervals:]
+    v_mid_m_per_s = v_mid_rows * problem.v_scale + problem.v_min_m_per_s
+    # On this smooth toy problem v_mid_m_per_s should sit near the node speeds it
+    # interpolates between, not off at some unbounded value.
+    assert np.all(np.isfinite(v_mid_m_per_s))
+    assert np.all(v_mid_m_per_s > np.minimum(v[:-1], v[1:]) - 1.0)
+    assert np.all(v_mid_m_per_s < np.maximum(v[:-1], v[1:]) + 1.0)
+    # The row is the constraint itself: slack = v_mid_m_per_s - v_min.
+    assert v_mid_rows == pytest.approx((v_mid_m_per_s - problem.v_min_m_per_s) / problem.v_scale)
+
+
+@pytest.mark.unit
+def test_midpoint_speed_jacobian_matches_finite_differences(reference_rider):
+    """Analytic ``d(v_mid_m_per_s)/dz`` rows agree with finite differences.
+
+    Evaluated away from ``P = CP``: ``DifferentialModel``'s ``h()`` has a
+    kink there, so a central difference straddling it disagrees with either
+    one-sided derivative (that kink is its own open question, issue #6
+    Section 8).
+    """
+    problem = _toy_problem(reference_rider)
+    v = np.array([10.0, 11.0, 12.0, 11.5])
+    w = np.array([20_000.0, 19_000.0, 18_000.0, 17_500.0])
+    p_W = np.array([305.0, 300.0, 290.0, 285.0])
+    z = problem.pack(v, w, p_W, np.array([290.0, 295.0, 287.0]))
+
+    jac = problem.inequality_jacobian(z)
+    for row in range(problem.n_intervals, 2 * problem.n_intervals):
+        fd = approx_fprime(z, lambda x, r=row: problem.inequality_constraints(x)[r], 1e-7)
+        assert np.max(np.abs(jac[row] - fd)) < 1e-6
+
+
+@pytest.mark.unit
+def test_trapezoidal_has_no_midpoint_constraints(reference_rider):
+    """The trapezoidal scheme has no midpoints, so neither midpoint row exists."""
+    problem = _toy_problem(reference_rider, scheme="trapezoidal")
+    assert problem.n_ineq_constraints == 0
+
+
+# ---------------------------------------------------------------------------
+# Solver convergence reporting (no solver -- classification and defaults only)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_ipopt_status_is_success_accepts_acceptable_level():
+    """IPOPT status 1 is a converged answer and must not be reported as failure.
+
+    IPOPT has two converged outcomes: 0 (``Solve_Succeeded``, primal-dual
+    error below ``tol``) and 1 (``Solved_To_Acceptable_Level``, below
+    ``acceptable_tol``). Classifying only 0 as success discarded a real
+    convergence signal (issue #6, item 7.6). Everything else -- 2
+    (``Infeasible_Problem_Detected``), the iteration limit, the negative
+    error statuses -- stays a non-success.
+    """
+    assert _ipopt_status_is_success(0) is True
+    assert _ipopt_status_is_success(1) is True
+    for status in (2, 3, 4, 5, 6, -1, -2, -100):
+        assert _ipopt_status_is_success(status) is False
+
+
+@pytest.mark.unit
+def test_solver_defaults_are_attainable():
+    """Both backends' default tolerances must stay reachable on this problem.
+
+    Regression guard for issue #6 item 7.6, which is a defaults change and
+    so has nothing else to hold it in place. scipy applies SLSQP's ``ftol``
+    absolutely to the summed constraint violation as well as the objective
+    decrement; measured at convergence that sum is 5e-09 to 8e-06 (scaled)
+    across the five phase-1 courses, so the previous ``1e-9`` could never
+    be met and SLSQP exited "Iteration limit reached" on every solve the
+    project had ever run. ``acceptable_tol`` must be set explicitly, since
+    :func:`_ipopt_status_is_success` now counts the outcome it gates.
+    """
+    assert SLSQPSolver().ftol == _ATTAINABLE_SLSQP_FTOL
+    assert IPOPTSolver().acceptable_tol == 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +322,7 @@ def test_hs_midpoint_matches_hand_computation(reference_rider):
         10.0, 20_000.0, 280.0, 10.0, 19_000.0, 280.0, 280.0, 0.0, 0.0, 0.0, 0.0, ds,
         rider_const, reference_rider.w_prime_model.MODEL_ID,
     )
-    assert res.w_mid == pytest.approx(expected_w_mid, rel=1e-9)
+    assert res.w_mid_J == pytest.approx(expected_w_mid, rel=1e-9)
 
 
 @pytest.mark.solver
@@ -231,6 +471,39 @@ def test_ipopt_agrees_with_slsqp_within_tolerance(flat_course_slsqp_result, flat
     _opt_a, res_a = flat_course_slsqp_result
     _opt_b, res_b = flat_course_ipopt_result
     rel_diff = abs(res_a.time_total_s - res_b.time_total_s) / res_a.time_total_s
+    assert rel_diff < 1e-3
+
+
+@pytest.mark.solver
+def test_attainable_ftol_reports_convergence_without_moving_t_finish(
+    flat_course_slsqp_result, flat_course, reference_rider, calm_wind
+):
+    """The reachable default converges and returns the same answer the unreachable one did.
+
+    Two claims, because a defaults change is only safe if both hold: the
+    flag now carries information (SLSQP reports success instead of
+    exhausting ``maxiter``), and stopping on ``ftol`` rather than on the
+    iteration limit does not move the answer. Measured across all five
+    phase-1 courses the movement is at most 2.0e-05 relative; the gate
+    here is the 1e-3 used by the cross-backend check.
+
+    IPOPT is deliberately not asserted on: it returns status -1
+    (``Maximum_Iterations_Exceeded``) on every course, with a dual
+    infeasibility that no tolerance setting reaches, so its flag stays
+    uninformative for a reason item 7.6 does not address (see
+    :class:`IPOPTSolver`).
+    """
+    _opt, res_default = flat_course_slsqp_result
+    assert res_default.success is True, res_default.message
+
+    opt_tight = ITTOptimizer(
+        reference_rider, flat_course, calm_wind, scheme="hermite_simpson", solver="slsqp"
+    )
+    opt_tight._make_solver = lambda: SLSQPSolver(ftol=_UNREACHABLE_SLSQP_FTOL)
+    res_tight = opt_tight.optimize(n_intervals=_N_INTERVALS)
+
+    assert res_tight.success is False  # the old default could not be met
+    rel_diff = abs(res_default.time_total_s - res_tight.time_total_s) / res_tight.time_total_s
     assert rel_diff < 1e-3
 
 

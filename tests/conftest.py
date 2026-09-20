@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -34,6 +36,41 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if item.get_closest_marker("solver"):
                 item.add_marker(skip_solver)
+
+
+# ---------------------------------------------------------------------------
+# Shared course helpers
+#
+# One place for the elevation convention: a course's net elevation change and
+# total ascent are integrals of sin(theta) along s.  Shared rather than
+# duplicated because issue #14 (s_m is horizontal distance, not road
+# arclength) will revisit exactly this convention.
+# ---------------------------------------------------------------------------
+
+GPX_DIR = Path(__file__).parent.parent / "data" / "ttt_strat" / "input"
+REAL_GPX_NAMES = ["giro2026_stage10.gpx", "tdf2026_stage16.gpx", "tara2026_stage3.gpx"]
+
+
+def load_real_gpx(name):
+    """Load a repo GPX fixture by file name, skipping the test if it is absent."""
+    from ttt_strat.course import load_gpx
+
+    path = GPX_DIR / name
+    if not path.exists():
+        pytest.skip(f"GPX file not found: {path}")
+    return load_gpx(path)
+
+
+def raw_net_and_ascent_m(data):
+    """Net elevation change and total ascent of a raw ``CourseData`` profile [m]."""
+    dz_m = data.grade[:-1] * np.diff(data.s_m)
+    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
+
+
+def net_and_ascent_m(s_m, theta_rad):
+    """Net elevation change and total ascent implied by ``(s_m, theta_rad)`` [m]."""
+    dz_m = 0.5 * (np.sin(theta_rad[:-1]) + np.sin(theta_rad[1:])) * np.diff(s_m)
+    return dz_m.sum(), dz_m[dz_m > 0.0].sum()
 
 
 # ---------------------------------------------------------------------------

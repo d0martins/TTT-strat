@@ -195,18 +195,24 @@ class _IntervalResult:
         The 2-vector defect ``D_k = (D_v, D_w)``.
     defect_jac_local : np.ndarray
         The 2x7 (HS) or 2x6 (trap) local defect Jacobian.
-    w_mid : float or None
+    w_mid_J : float or None
         Interpolated midpoint W'_bal (HS only; ``None`` for trapezoidal).
     w_mid_grad_local : np.ndarray or None
-        Gradient of ``w_mid`` w.r.t. the 7 local variables (HS only).
+        Gradient of ``w_mid_J`` w.r.t. the 7 local variables (HS only).
+    v_mid_m_per_s : float or None
+        Interpolated midpoint speed (HS only; ``None`` for trapezoidal).
+    v_mid_grad_local : np.ndarray or None
+        Gradient of ``v_mid_m_per_s`` w.r.t. the 7 local variables (HS only).
     """
 
     obj_val: float
     obj_grad_local: np.ndarray
     defect: np.ndarray
     defect_jac_local: np.ndarray
-    w_mid: float | None
+    w_mid_J: float | None
     w_mid_grad_local: np.ndarray | None
+    v_mid_m_per_s: float | None = None
+    v_mid_grad_local: np.ndarray | None = None
 
 
 def _hermite_simpson_interval(
@@ -233,8 +239,8 @@ def _hermite_simpson_interval(
 
     # Eq. 41: interpolated midpoint state, and its Jacobian w.r.t. the 6
     # node-level (v, w, P) variables via the chain rule.
-    v_mid = 0.5 * (v_k + v_k1) + (ds / 8.0) * (dv_k - dv_k1)
-    w_mid = 0.5 * (w_k + w_k1) + (ds / 8.0) * (dw_k - dw_k1)
+    v_mid_m_per_s = 0.5 * (v_k + v_k1) + (ds / 8.0) * (dv_k - dv_k1)
+    w_mid_J = 0.5 * (w_k + w_k1) + (ds / 8.0) * (dw_k - dw_k1)
 
     d_xmid_d_left = np.zeros((2, 3))
     d_xmid_d_left[0, 0] += 0.5
@@ -247,9 +253,9 @@ def _hermite_simpson_interval(
     d_xmid_d_right -= (ds / 8.0) * jk1
 
     dv_mid, dw_mid, jmid = _rhs_and_jacobian(
-        v_mid, w_mid, p_mid, theta_mid, vw_mid, crr, mass_kg, rho_kg_per_m3, cda_m2, l_drive, cp_W, w_prime_J, model_id
+        v_mid_m_per_s, w_mid_J, p_mid, theta_mid, vw_mid, crr, mass_kg, rho_kg_per_m3, cda_m2, l_drive, cp_W, w_prime_J, model_id
     )
-    jmid_state = jmid[:, 0:2]  # d(f_mid)/d(v_mid, w_mid)
+    jmid_state = jmid[:, 0:2]  # d(f_mid)/d(v_mid_m_per_s, w_mid_J)
     jmid_pmid = jmid[:, 2]  # d(f_mid)/d(P_mid), direct
 
     d_fmid_d_left = jmid_state @ d_xmid_d_left
@@ -281,9 +287,9 @@ def _hermite_simpson_interval(
     defect_jac_local[:, 6] = dD_d_pmid
 
     # Eq. 44: this interval's Simpson-quadrature contribution to t_finish.
-    obj_val = (ds / 6.0) * (1.0 / v_k + 4.0 / v_mid + 1.0 / v_k1)
+    obj_val = (ds / 6.0) * (1.0 / v_k + 4.0 / v_mid_m_per_s + 1.0 / v_k1)
 
-    coeff = (ds / 6.0) * 4.0 * (-1.0 / v_mid**2)
+    coeff = (ds / 6.0) * 4.0 * (-1.0 / v_mid_m_per_s**2)
     obj_grad_local = np.zeros(7)
     obj_grad_local[0:3] = coeff * d_xmid_d_left[0, :]
     obj_grad_local[3:6] = coeff * d_xmid_d_right[0, :]
@@ -294,7 +300,16 @@ def _hermite_simpson_interval(
     w_mid_grad_local[0:3] = d_xmid_d_left[1, :]
     w_mid_grad_local[3:6] = d_xmid_d_right[1, :]
 
-    return _IntervalResult(obj_val, obj_grad_local, defect, defect_jac_local, w_mid, w_mid_grad_local)
+    # Same rows the objective already uses above, without the -4/v_mid_m_per_s**2
+    # factor: d(v_mid_m_per_s)/d(local vars), for the v_mid_m_per_s >= v_min inequality.
+    v_mid_grad_local = np.zeros(7)
+    v_mid_grad_local[0:3] = d_xmid_d_left[0, :]
+    v_mid_grad_local[3:6] = d_xmid_d_right[0, :]
+
+    return _IntervalResult(
+        obj_val, obj_grad_local, defect, defect_jac_local,
+        w_mid_J, w_mid_grad_local, v_mid_m_per_s, v_mid_grad_local,
+    )
 
 
 def _trapezoidal_interval(
@@ -379,6 +394,11 @@ class CollocationProblem:
         tight physical cap; a bound too close to a genuinely achievable
         speed reproduces the escape-valve pathology documented in
         ``docs/plans/phase-1.md`` instead of preventing it. Default 30.0.
+    v_min_m_per_s : float, optional
+        Lower speed bound [m/s], applied both as the node box bound and as
+        the midpoint ``v_mid_m_per_s >= v_min`` inequality, so the two cannot drift
+        apart. A numerical guard against the ``v -> 0`` singularity in
+        Eq. 9, not part of the OCP statement. Default 0.5.
 
     Attributes
     ----------
@@ -399,6 +419,7 @@ class CollocationProblem:
         w0_J: float,
         scheme: Literal["hermite_simpson", "trapezoidal"] = "hermite_simpson",
         v_max_m_per_s: float = 30.0,
+        v_min_m_per_s: float = 0.5,
     ) -> None:
         self.rider = rider
         self.s_m = np.asarray(s_m, dtype=float)
@@ -422,6 +443,7 @@ class CollocationProblem:
         )
 
         # Section 10.6 scaling: v/15, W'_bal/W'_0, P/CP.
+        self.v_min_m_per_s = float(v_min_m_per_s)
         self.v_scale = 15.0
         self.w_scale = rider.w_prime_J
         self.p_scale = rider.cp_W
@@ -445,7 +467,14 @@ class CollocationProblem:
 
         n_eq = 2 * self.n_intervals + 2  # HS/trap defects + 2 boundary conditions
         self.n_eq_constraints = n_eq
-        self.n_ineq_constraints = self.n_intervals if scheme == "hermite_simpson" else 0
+        # Two inequality rows per HS interval: w_mid_J >= 0 (Eq. 32) then
+        # v_mid_m_per_s >= v_min. v_mid_m_per_s is a *derived* quantity (Eq. 41) that enters
+        # the objective as 4/v_mid_m_per_s, so without its own bound it carries none:
+        # with a wide interval the (ds/8)*delta(dv/ds) term can drive it large
+        # or through zero while both node speeds stay inside their box, which
+        # lowers the reported time for free and has produced negative finish
+        # times (issue #6).
+        self.n_ineq_constraints = 2 * self.n_intervals if scheme == "hermite_simpson" else 0
 
         self._cache_key: bytes | None = None
         self._cache: dict | None = None
@@ -476,12 +505,12 @@ class CollocationProblem:
 
     # ------------------------------------------------------------------
     # Bounds (Eqs. 31-32 node/control box bounds; midpoint W'_bal >= 0 is
-    # an inequality constraint, not a box bound, since w_mid is derived —
+    # an inequality constraint, not a box bound, since w_mid_J is derived —
     # see _hermite_simpson_interval)
     # ------------------------------------------------------------------
 
     def bounds(
-        self, v_min_m_per_s: float = 0.5, v_max_m_per_s: float | None = None
+        self, v_min_m_per_s: float | None = None, v_max_m_per_s: float | None = None
     ) -> list[tuple[float, float]]:
         """Return scaled ``(lo, hi)`` box bounds for every decision variable.
 
@@ -491,7 +520,9 @@ class CollocationProblem:
             Generous physical lower speed bound [m/s] to keep the solver
             away from the ``v -> 0`` singularity in ``dv_ds`` (Eq. 9).
             Not part of the OCP statement (Section 6.1) — a
-            numerical-stability guard only.
+            numerical-stability guard only. Defaults to
+            ``self.v_min_m_per_s``, which is also what the midpoint
+            ``v_mid_m_per_s >= v_min`` inequality uses.
         v_max_m_per_s : float, optional
             Upper speed bound [m/s]. Defaults to ``self.v_max_m_per_s``
             (set at construction) if not overridden here.
@@ -503,6 +534,8 @@ class CollocationProblem:
         """
         if v_max_m_per_s is None:
             v_max_m_per_s = self.v_max_m_per_s
+        if v_min_m_per_s is None:
+            v_min_m_per_s = self.v_min_m_per_s
         n1 = self.n
         b = [(v_min_m_per_s / self.v_scale, v_max_m_per_s / self.v_scale)] * n1
         b += [(0.0, self.rider.w_prime_J / self.w_scale)] * n1
@@ -568,9 +601,14 @@ class CollocationProblem:
                 defects_jac[2 * k + 1, local_idx[j]] = res.defect_jac_local[1, oi] * scale_per_local[j] / self.w_scale
 
             if self.scheme == "hermite_simpson":
-                ineq[k] = res.w_mid / self.w_scale
+                # Rows [0, N): w_mid_J >= 0.  Rows [N, 2N): v_mid_m_per_s >= v_min.
+                ineq[k] = res.w_mid_J / self.w_scale
+                ineq[self.n_intervals + k] = (res.v_mid_m_per_s - self.v_min_m_per_s) / self.v_scale
                 for j, oi in enumerate(order):
                     ineq_jac[k, local_idx[j]] = res.w_mid_grad_local[oi] * scale_per_local[j] / self.w_scale
+                    ineq_jac[self.n_intervals + k, local_idx[j]] = (
+                        res.v_mid_grad_local[oi] * scale_per_local[j] / self.v_scale
+                    )
 
         # Boundary equality defects: v[0] = v0, w[0] = w0 (Section 7.1).
         boundary = np.array([(v[0] - self.v0_m_per_s) / self.v_scale, (w[0] - self.w0_J) / self.w_scale])

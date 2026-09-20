@@ -21,7 +21,7 @@ from ttt_strat.collocation import CollocationProblem, _rhs_and_jacobian
 from ttt_strat.course import ProcessedCourse
 from ttt_strat.physics import _rk4_distance_integrate, dv_ds
 from ttt_strat.rider import Rider
-from ttt_strat.simulator import _launch_and_truncate
+from ttt_strat.simulator import ForwardSimulator, _launch_and_truncate
 from ttt_strat.wind import WindField
 
 
@@ -104,8 +104,21 @@ def _graded_mesh(s0: float, s_end: float, n_intervals: int, l_relax_m: float) ->
     rider/course/grade combination. The remaining distance is split
     uniformly, as before.
 
-    Starting fraction ``L/32`` and 9 graded steps (rather than a coarser
-    ``L/4``/6 steps tried first) were chosen empirically: on the
+    The ramp **stops once a step would exceed the uniform width that
+    follows it**, so ``n_grade`` is derived rather than fixed. Growing
+    past that width put a single interval of up to 1.3 km in the middle
+    of real terrain a few hundred metres into the course, which is the
+    very pathology grading exists to remove: the NLP then optimizes
+    against a course sampled at three points over that span. Because the
+    old ramp was also capped at 9 steps regardless of ``n_intervals``,
+    refinement never reached the block carrying the error, and the
+    resulting terrain error was frozen under mesh refinement (+25 m of
+    phantom net climb on TARA at every mesh size). Capping the ramp
+    instead makes it converge with the mesh, and leaves the fine ``L/32``
+    launch resolution untouched (issue #6).
+
+    The starting fraction ``L/32`` (rather than the coarser ``L/4``
+    tried first) was chosen empirically and is retained: on the
     flat-course MVP case, tightening from L/4 to L/32 dropped the
     NLP-vs-independent-``ForwardSimulator`` cross-validation error from
     ~0.5% to ~0.09-0.3% (two independent solvers, SLSQP and IPOPT, agreeing
@@ -135,23 +148,41 @@ def _graded_mesh(s0: float, s_end: float, n_intervals: int, l_relax_m: float) ->
     if span <= 0.0 or n_intervals < 10:
         return np.linspace(s0, s_end, n_intervals + 1)
 
-    n_grade = max(2, min(9, n_intervals // 3))
-    widths = l_relax_m * (1.0 / 32.0) * (2.0 ** np.arange(n_grade))  # L/32, L/16, ..., ~8L
-    graded_total = float(np.sum(widths))
-
     # Cap the graded region to a modest fraction of the course so short
     # courses or a large L don't starve the rest of the interval budget.
     max_graded_frac = 0.4
-    if graded_total > max_graded_frac * span:
-        widths = widths * (max_graded_frac * span / graded_total)
-        graded_total = max_graded_frac * span
+    max_n_grade = max(2, n_intervals // 3)  # never let the ramp eat the interval budget
 
-    n_uniform = n_intervals - n_grade
-    remaining = span - graded_total
-    if n_uniform < 1 or remaining <= 0.0:
+    # Grow the ramp one step at a time and keep the longest one whose last
+    # (widest) step still fits inside the uniform width that follows it.
+    # The two depend on each other -- adding a graded step both widens the
+    # ramp and takes an interval away from the tail -- so this is solved by
+    # search rather than in closed form.
+    best: tuple[np.ndarray, float, int] | None = None
+    for n_grade in range(2, max_n_grade + 1):
+        widths = l_relax_m * (1.0 / 32.0) * (2.0 ** np.arange(n_grade))  # L/32, L/16, ...
+        graded_total = float(np.sum(widths))
+        if graded_total > max_graded_frac * span:
+            break
+
+        n_uniform = n_intervals - n_grade
+        remaining = span - graded_total
+        if n_uniform < 1 or remaining <= 0.0:
+            break
+
+        uniform_width = remaining / n_uniform
+        if widths[-1] > uniform_width:
+            break
+        best = (widths, uniform_width, n_uniform)
+
+    if best is None:
+        # L is large relative to the course, or the budget is too small for
+        # even a 2-step ramp: a uniform mesh is the safe fallback (this
+        # function is a conditioning aid and must never raise).
         return np.linspace(s0, s_end, n_intervals + 1)
 
-    uniform_width = remaining / n_uniform
+    widths, uniform_width, n_uniform = best
+    n_grade = len(widths)
     s_new = np.empty(n_intervals + 1)
     s_new[0] = s0
     s_new[1 : n_grade + 1] = s0 + np.cumsum(widths)
@@ -184,7 +215,16 @@ class OptimizationResult:
         Index into the original full-resolution course where the
         collocation grid begins (first node at or beyond ``s_match_m``).
     n_intervals : int
-        Number of collocation intervals solved.
+        Number of collocation intervals **actually solved**, i.e. after any
+        mesh refinement (``len(s_m) - 1``).  This used to echo the
+        *requested* count, which hid the fact that each backend refines
+        independently: two backends given the same ``n_intervals`` can
+        return solutions to differently-discretized problems, so a
+        cross-backend comparison that does not check this is not comparing
+        like with like (issue #6).  See ``n_intervals_requested``.
+    n_intervals_requested : int
+        The ``n_intervals`` passed to :meth:`ITTOptimizer.optimize`, before
+        refinement.
     solver : {"slsqp", "ipopt"}
         Which NLP backend produced this result.
     scheme : {"hermite_simpson", "trapezoidal"}
@@ -202,6 +242,30 @@ class OptimizationResult:
         so any value there is safe.  Convenience for feeding the plan
         back into ``ForwardSimulator.simulate()`` for validation/
         smoothing (Phase 1 plan decision 9).
+    time_forward_sim_s : float or None
+        ``full_course_power_W`` replayed through ``ForwardSimulator`` on
+        the true course [s], or ``None`` if ``forward_validate=False``.
+        ``time_total_s`` is a Simpson quadrature over the optimizer's own
+        (coarse, resampled) mesh, so it can report a time no physically
+        realizable trajectory achieves; the replay runs at the course's own
+        resolution and is the better of the two numbers for a plausible
+        plan (issue #6).
+    v_min_forward_sim_m_per_s : float or None
+        Minimum speed reached on that replay [m/s], excluding the launch
+        node.  **This is the quantity to gate on.** Neither time is
+        self-validating: both are Simpson quadratures of ``1/v`` and both
+        become meaningless as ``v`` approaches the integrator's 1e-3 m/s
+        floor, where a single floored node can manufacture hours of
+        phantom time.  A plan whose minimum speed approaches that floor
+        has stalled the rider regardless of what either number says, so
+        the replayed time is a reliable *detector* of a bad plan and an
+        unreliable *measure* of one.
+    w_prime_violated_forward_sim : bool or None
+        Whether W'_bal reached 0 on that replay.  The NLP's node bounds
+        plus the midpoint ``w_mid_J >= 0`` inequality do not keep W'
+        non-negative when the plan is replayed at full course resolution,
+        so this is commonly ``True`` on real courses: the plan is then
+        optimistic and not directly rideable.
     """
 
     s_m: np.ndarray
@@ -219,6 +283,10 @@ class OptimizationResult:
     message: str
     full_course_s_m: np.ndarray
     full_course_power_W: np.ndarray
+    n_intervals_requested: int = 0
+    time_forward_sim_s: float | None = None
+    v_min_forward_sim_m_per_s: float | None = None
+    w_prime_violated_forward_sim: bool | None = None
 
 
 class Solver(Protocol):
@@ -238,9 +306,26 @@ class Solver(Protocol):
 
 
 class SLSQPSolver:
-    """``scipy.optimize.minimize(method="SLSQP")`` backend — always available."""
+    """``scipy.optimize.minimize(method="SLSQP")`` backend — always available.
 
-    def __init__(self, maxiter: int = 600, ftol: float = 1e-9) -> None:
+    ``ftol`` is absolute, and scipy applies it to the summed constraint
+    violation as well as to the objective decrement. The former ``1e-9``
+    was unreachable on this problem: measured at convergence, the summed
+    scaled violation sits between 5e-9 and 8e-6 across the five courses
+    the phase-1 notebooks use, so SLSQP ran to ``maxiter`` and returned
+    "Iteration limit reached" on every solve this project had ever done.
+    The flag carried no information as a result (issue #6, item 7.6).
+
+    ``1e-5`` is the loosest-to-tightest sweep's smallest value that
+    returns success on all five courses (``1e-6`` still leaves the
+    synthetic rolling course and giro2026_s10 reporting failure). It
+    moves ``t_finish`` by at most 2.0e-05 relative, leaves the worst
+    speed defect at 1.2e-05 m/s (4000x inside ``defect_tol_v_m_per_s``),
+    and cuts 100-400 iterations off each solve. It is still 3.7e-09
+    relative against an objective of order 1e3 s.
+    """
+
+    def __init__(self, maxiter: int = 600, ftol: float = 1e-5) -> None:
         self.maxiter = maxiter
         self.ftol = ftol
 
@@ -294,6 +379,34 @@ class _IpoptCallbacks:
         return jac.flatten()
 
 
+def _ipopt_status_is_success(status: int) -> bool:
+    """Classify an IPOPT return status as a converged solve or not.
+
+    IPOPT reports two converged outcomes, not one: status ``0``
+    (``Solve_Succeeded``, the primal-dual error is below ``tol``) and
+    status ``1`` (``Solved_To_Acceptable_Level``, it is below
+    ``acceptable_tol`` instead). Treating only ``0`` as success
+    classified a converged answer as a failure and was part of why this
+    project had no usable convergence signal at all (issue #6, item
+    7.6). Every other status - iteration limit, infeasibility, an error
+    - is a genuine non-success.
+
+    Split out as a plain function so the classification is testable
+    without ``cyipopt`` installed.
+
+    Parameters
+    ----------
+    status : int
+        ``info["status"]`` as returned by ``cyipopt.Problem.solve``.
+
+    Returns
+    -------
+    bool
+        True for status 0 or 1, False otherwise.
+    """
+    return status in (0, 1)
+
+
 class IPOPTSolver:
     """``cyipopt`` (IPOPT) backend — requires the optional ``dev`` extra.
 
@@ -302,11 +415,38 @@ class IPOPTSolver:
     second derivatives of the HS defect Jacobian is out of scope for an
     MVP whose acceptance bar is "SLSQP and IPOPT agree to 0.1% on t_finish"
     (Phase 1 plan decision 5).
+
+    ``acceptable_tol`` is set explicitly rather than left at IPOPT's
+    implicit default because :func:`_ipopt_status_is_success` counts
+    ``Solved_To_Acceptable_Level`` as a converged solve: the tolerance
+    that outcome is measured against has to be one this project chose.
+
+    **This backend's flag is still uninformative, and not for a
+    tolerance reason.** Measured on all five phase-1 courses, IPOPT
+    returns status -1 (``Maximum_Iterations_Exceeded``) - never status
+    1 - and the returned iterate is bit-identical for every
+    ``(tol, acceptable_tol)`` pair from (1e-8, 1e-6) out to (1e-4, 1e-2),
+    because the overall NLP error never approaches any of them. On the
+    flat course at iteration 600 that error is 1.17e+01, essentially all
+    of it dual infeasibility, against a constraint violation of 1.4e-02
+    and complementarity of 8.9e-06: the primal iterate is fine and the
+    dual stagnates. That is the signature of the non-smooth ``P = CP``
+    kink in ``DifferentialModel``'s ``dh/dP`` combined with the
+    limited-memory Hessian, which issue #6 Section 8 tracks as an open
+    question. Raising ``max_iter`` was not tried; the stagnation is
+    oscillatory, not slow progress.
     """
 
-    def __init__(self, max_iter: int = 600, tol: float = 1e-8, print_level: int = 0) -> None:
+    def __init__(
+        self,
+        max_iter: int = 600,
+        tol: float = 1e-8,
+        acceptable_tol: float = 1e-6,
+        print_level: int = 0,
+    ) -> None:
         self.max_iter = max_iter
         self.tol = tol
+        self.acceptable_tol = acceptable_tol
         self.print_level = print_level
 
     def solve(self, problem: CollocationProblem, z0: np.ndarray) -> tuple[np.ndarray, bool, str]:
@@ -347,10 +487,11 @@ class IPOPTSolver:
         nlp.add_option("hessian_approximation", "limited-memory")
         nlp.add_option("max_iter", self.max_iter)
         nlp.add_option("tol", self.tol)
+        nlp.add_option("acceptable_tol", self.acceptable_tol)
         nlp.add_option("print_level", self.print_level)
 
         x_opt, info = nlp.solve(z0)
-        success = int(info["status"]) == 0
+        success = _ipopt_status_is_success(int(info["status"]))
         return x_opt, success, str(info["status_msg"])
 
 
@@ -451,6 +592,7 @@ class ITTOptimizer:
         defect_tol_v_m_per_s: float = 0.05,
         defect_tol_w_J: float = 50.0,
         v_max_margin: float = 2.5,
+        forward_validate: bool = True,
     ) -> OptimizationResult:
         """Solve the NLP and return the optimal power plan.
 
@@ -497,6 +639,15 @@ class ITTOptimizer:
             rather than only guarding against runaway solver iterates;
             see docs/plans/phase-1.md's assessment of why a fixed,
             tightly-tuned bound is unsafe across a wide rider/course range.
+        forward_validate : bool, optional
+            Replay the returned plan through ``ForwardSimulator`` on the
+            true course and record ``time_forward_sim_s``,
+            ``v_min_forward_sim_m_per_s`` and
+            ``w_prime_violated_forward_sim`` (default True). The replay
+            costs milliseconds against a solve that takes tens of seconds,
+            but it is optional because Phase 2's GA/Monte-Carlo search
+            calls ``optimize`` in bulk. Turning it off gives back a result
+            whose reported time has no independent check on it (issue #6).
 
         Returns
         -------
@@ -595,6 +746,28 @@ class ITTOptimizer:
             s_ctrl, p_ctrl = s_new, p_opt
         full_power[i_start:] = np.interp(self.course.s_m[i_start:], s_ctrl, p_ctrl)
 
+        time_forward_sim_s = None
+        v_min_forward_sim_m_per_s = None
+        w_prime_violated_forward_sim = None
+        if forward_validate:
+            # Replaying the plan on the true course is what makes a
+            # pathological solution self-announcing: the collocation
+            # objective is a quadrature over the optimizer's own coarse
+            # mesh and cannot detect a plan that stalls the rider.
+            sim = ForwardSimulator().simulate(
+                self.rider,
+                self.course,
+                self.wind,
+                full_power,
+                self.rho_kg_per_m3,
+                v_match_m_per_s=self.v_match_m_per_s,
+            )
+            time_forward_sim_s = float(sim.time_total_s)
+            # Node 0 is the standing start (v -> 0), so it is never the
+            # informative minimum.
+            v_min_forward_sim_m_per_s = float(np.min(sim.v_m_per_s[1:]))
+            w_prime_violated_forward_sim = bool(sim.w_prime_violated)
+
         return OptimizationResult(
             s_m=s_new,
             power_W=p_opt,
@@ -604,11 +777,15 @@ class ITTOptimizer:
             time_total_s=time_total_s,
             t_launch_s=t_match_s,
             i_start=i_start,
-            n_intervals=n_intervals,
+            n_intervals=len(s_new) - 1,
             solver=self.solver_name,
             scheme=self.scheme,
             success=success,
             message=message,
             full_course_s_m=self.course.s_m,
             full_course_power_W=full_power,
+            n_intervals_requested=n_intervals,
+            time_forward_sim_s=time_forward_sim_s,
+            v_min_forward_sim_m_per_s=v_min_forward_sim_m_per_s,
+            w_prime_violated_forward_sim=w_prime_violated_forward_sim,
         )
