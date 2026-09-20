@@ -21,9 +21,9 @@ sequentially-numbered source -- written as "(design-doc Eq. N)" /
 validation/methodology content with no doc-section counterpart cites
 none.
 
-Runtimes below are measured, not estimated -- wall-clock on this
-environment's 2-core machine, one notebook at a time (not run in
-parallel with anything else).
+Runtimes below are measured, not estimated -- wall-clock, one notebook at
+a time (not run in parallel with anything else). Each notebook's own
+header cell quotes the same measurement.
 
 ## `phase_1_0_common.py`
 
@@ -41,16 +41,21 @@ than being copy-pasted across notebooks.
 
 ## Notebooks
 
-| # | File | Runtime (2-core) | Covers |
+| # | File | Runtime | Covers |
 |---|---|---|---|
-| 1 | `phase_1_1_scheme_comparison.ipynb` | ~3.3 min | Section 10.2/10.3: Hermite-Simpson vs trapezoidal collocation scheme, on all 5 courses (synthetic flat/rolling + real Giro10/TdF16/TARA). Produces each course's `res_hs_*`/`opt_hs_*` baseline. |
-| 2 | `phase_1_2_backend_crossvalidation.ipynb` | ~18.0 min | SLSQP vs IPOPT agreement, and NLP vs `ForwardSimulator` re-simulation agreement -- the two checks the project actually gates correctness on, instead of the solver's own `success` flag. All 5 courses; rebuilds each baseline itself. Original validation methodology, no design-doc section counterpart. |
-| 3 | `phase_1_3_launch_mesh_grading.ipynb` | ~2.1 min | Section 10.6/8: why the collocation mesh needs grading (not uniform spacing) near the standing-start launch hand-off, including a deliberately reconstructed uniform-mesh failure case. Synthetic flat course + real Giro10/TdF16. |
-| 4 | `phase_1_4_constrained_smoothing.ipynb` | ~35.8 min -- the most expensive notebook | Section 12.1: `smooth_constrained`'s power-slew-bounded re-optimization (Eq. 45), stress-tested across 6 input-quality tiers on all 5 courses. Documents genuine SLSQP non-convergence found on TdF16 and TARA under adversarial tiers. |
-| 5 | `phase_1_5_posthoc_smoothing.ipynb` | ~2.2 min | Section 12.2: `smooth_posthoc`'s cheap box-filter-then-resimulate diagnostic mode, same 6 tiers, all 5 courses, plus the "Eq. 45 vs post-hoc" comparison. |
-| 6 | `phase_1_6_real_course_validation.ipynb` | ~1.4 min | Ballpark check of optimizer finish times against the real race results the commit cites, all 3 real courses. Original validation content, no design-doc section counterpart. |
-| 7 | `phase_1_7_cross_check_ledger.ipynb` | ~51.7 min -- run rarely, not for iteration | Recomputes everything above and prints the full numeric scoreboard against the pytest gates that back it, including which claims are genuine gate failures (TARA's backend/slew-bound checks) rather than hidden. Original validation content, no design-doc section counterpart. |
+| 1 | `phase_1_1_scheme_comparison.ipynb` | ~1.9 min | Section 10.2/10.3: Hermite-Simpson vs trapezoidal collocation scheme, on all 5 courses (synthetic flat/rolling + real Giro10/TdF16/TARA). Produces each course's `res_hs_*`/`opt_hs_*` baseline. |
+| 2 | `phase_1_2_backend_crossvalidation.ipynb` | ~7.2 min | SLSQP vs IPOPT agreement, and NLP vs `ForwardSimulator` re-simulation agreement -- the two checks the project actually gates correctness on, instead of the solver's own `success` flag. All 5 courses; rebuilds each baseline itself. Original validation methodology, no design-doc section counterpart. |
+| 3 | `phase_1_3_launch_mesh_grading.ipynb` | ~1.1 min | Section 10.6/8: why the collocation mesh needs grading (not uniform spacing) near the standing-start launch hand-off, including a deliberately reconstructed uniform-mesh failure case. Synthetic flat course + real Giro10/TdF16. |
+| 4 | `phase_1_4_constrained_smoothing.ipynb` | ~14.1 min -- the most expensive notebook | Section 12.1: `smooth_constrained`'s power-slew-bounded re-optimization (Eq. 45), stress-tested across 6 input-quality tiers on all 5 courses. The TdF16/TARA non-convergence it used to document is fixed (issue #6 item 7.4); the flat course's catastrophic tier is now the one failing case. |
+| 5 | `phase_1_5_posthoc_smoothing.ipynb` | ~1.5 min | Section 12.2: `smooth_posthoc`'s cheap box-filter-then-resimulate diagnostic mode, same 6 tiers, all 5 courses, plus the "Eq. 45 vs post-hoc" comparison. |
+| 6 | `phase_1_6_real_course_validation.ipynb` | ~1.3 min | Ballpark check of optimizer finish times against the real race results the commit cites, all 3 real courses. Original validation content, no design-doc section counterpart. |
+| 7 | `phase_1_7_cross_check_ledger.ipynb` | ~21.3 min -- run rarely, not for iteration | Recomputes everything above and prints the full numeric scoreboard against the pytest gates that back it, including which claims are genuine gate failures (the flat course's constrained-smoothing time row, and the two real courses that still miss the cross-backend bound) rather than hidden. Original validation content, no design-doc section counterpart. |
 
-**Total if run sequentially: ~115 min** -- but the point of the split is
+**Total if run sequentially: ~48 min** -- but the point of the split is
 that you rarely need all 7; e.g. debugging the post-hoc mode only costs
-notebook 5's ~2 minutes, not the full run.
+notebook 5's ~1.5 minutes, not the full run.
+
+These are less than half the runtimes this table carried before: issue #6
+item 7.6 gave SLSQP a reachable `ftol`, so it now converges in 200-500
+iterations instead of exhausting its 600-iteration budget on every solve.
+The totals were ~115 min.
