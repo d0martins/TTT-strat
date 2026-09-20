@@ -9,6 +9,13 @@ with the user after empirical investigation — see
 ``docs/plans/phase-1.md``'s "Implementation status" section for the full
 writeup (mesh-grading fix, bang-bang launch-burst finding, why raw
 ``result.success`` isn't a reliable gate at the adopted grading).
+
+Cross-validation remains the correctness gate, but part of why
+``result.success`` carried no information at all was self-inflicted and is
+now fixed: SLSQP's ``ftol`` was unreachable on this problem, so every solve
+the project had ever run exited "Iteration limit reached", and IPOPT's
+status 1 (``Solved_To_Acceptable_Level``) was classified as failure
+(issue #6, item 7.6).
 """
 
 from __future__ import annotations
@@ -20,10 +27,12 @@ from scipy.optimize import approx_fprime
 
 from ttt_strat.collocation import CollocationProblem, _rhs_and_jacobian
 from ttt_strat.optimizer import (
+    IPOPTSolver,
     ITTOptimizer,
     SLSQPSolver,
     _equilibrium_speed_and_relax_length,
     _graded_mesh,
+    _ipopt_status_is_success,
 )
 from ttt_strat.rider import Rider
 from ttt_strat.simulator import ForwardSimulator
@@ -34,6 +43,12 @@ from ttt_strat.w_prime.linear import LinearModel
 from ttt_strat.w_prime.skiba import SkibaModel
 
 _N_INTERVALS = 60  # small enough to keep the solver suite's wall time reasonable
+
+# SLSQP's default ftol, duplicated here on purpose: the point of
+# test_solver_defaults_are_attainable is to fail if the default drifts back to
+# something unreachable, which it could not do if it read the default itself.
+_ATTAINABLE_SLSQP_FTOL = 1e-5
+_UNREACHABLE_SLSQP_FTOL = 1e-9  # what shipped before issue #6 item 7.6
 
 # Number of collocation nodes at the start of a solve, graded near the
 # launch hand-off, that legitimately show a brief above-CP bang-bang burst
@@ -217,6 +232,45 @@ def test_trapezoidal_has_no_midpoint_constraints(reference_rider):
     """The trapezoidal scheme has no midpoints, so neither midpoint row exists."""
     problem = _toy_problem(reference_rider, scheme="trapezoidal")
     assert problem.n_ineq_constraints == 0
+
+
+# ---------------------------------------------------------------------------
+# Solver convergence reporting (no solver -- classification and defaults only)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_ipopt_status_is_success_accepts_acceptable_level():
+    """IPOPT status 1 is a converged answer and must not be reported as failure.
+
+    IPOPT has two converged outcomes: 0 (``Solve_Succeeded``, primal-dual
+    error below ``tol``) and 1 (``Solved_To_Acceptable_Level``, below
+    ``acceptable_tol``). Classifying only 0 as success discarded a real
+    convergence signal (issue #6, item 7.6). Everything else -- 2
+    (``Infeasible_Problem_Detected``), the iteration limit, the negative
+    error statuses -- stays a non-success.
+    """
+    assert _ipopt_status_is_success(0) is True
+    assert _ipopt_status_is_success(1) is True
+    for status in (2, 3, 4, 5, 6, -1, -2, -100):
+        assert _ipopt_status_is_success(status) is False
+
+
+@pytest.mark.unit
+def test_solver_defaults_are_attainable():
+    """Both backends' default tolerances must stay reachable on this problem.
+
+    Regression guard for issue #6 item 7.6, which is a defaults change and
+    so has nothing else to hold it in place. scipy applies SLSQP's ``ftol``
+    absolutely to the summed constraint violation as well as the objective
+    decrement; measured at convergence that sum is 5e-09 to 8e-06 (scaled)
+    across the five phase-1 courses, so the previous ``1e-9`` could never
+    be met and SLSQP exited "Iteration limit reached" on every solve the
+    project had ever run. ``acceptable_tol`` must be set explicitly, since
+    :func:`_ipopt_status_is_success` now counts the outcome it gates.
+    """
+    assert SLSQPSolver().ftol == _ATTAINABLE_SLSQP_FTOL
+    assert IPOPTSolver().acceptable_tol == 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +471,39 @@ def test_ipopt_agrees_with_slsqp_within_tolerance(flat_course_slsqp_result, flat
     _opt_a, res_a = flat_course_slsqp_result
     _opt_b, res_b = flat_course_ipopt_result
     rel_diff = abs(res_a.time_total_s - res_b.time_total_s) / res_a.time_total_s
+    assert rel_diff < 1e-3
+
+
+@pytest.mark.solver
+def test_attainable_ftol_reports_convergence_without_moving_t_finish(
+    flat_course_slsqp_result, flat_course, reference_rider, calm_wind
+):
+    """The reachable default converges and returns the same answer the unreachable one did.
+
+    Two claims, because a defaults change is only safe if both hold: the
+    flag now carries information (SLSQP reports success instead of
+    exhausting ``maxiter``), and stopping on ``ftol`` rather than on the
+    iteration limit does not move the answer. Measured across all five
+    phase-1 courses the movement is at most 2.0e-05 relative; the gate
+    here is the 1e-3 used by the cross-backend check.
+
+    IPOPT is deliberately not asserted on: it returns status -1
+    (``Maximum_Iterations_Exceeded``) on every course, with a dual
+    infeasibility that no tolerance setting reaches, so its flag stays
+    uninformative for a reason item 7.6 does not address (see
+    :class:`IPOPTSolver`).
+    """
+    _opt, res_default = flat_course_slsqp_result
+    assert res_default.success is True, res_default.message
+
+    opt_tight = ITTOptimizer(
+        reference_rider, flat_course, calm_wind, scheme="hermite_simpson", solver="slsqp"
+    )
+    opt_tight._make_solver = lambda: SLSQPSolver(ftol=_UNREACHABLE_SLSQP_FTOL)
+    res_tight = opt_tight.optimize(n_intervals=_N_INTERVALS)
+
+    assert res_tight.success is False  # the old default could not be met
+    rel_diff = abs(res_default.time_total_s - res_tight.time_total_s) / res_tight.time_total_s
     assert rel_diff < 1e-3
 
 
