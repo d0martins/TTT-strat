@@ -164,6 +164,12 @@ Time-domain RK4, `physics.py`'s `_rk4_integrate_launch*`, shared by `simulator.p
 | n/a | m/s | `v_max_m_per_s` (`CollocationProblem` attribute) | Numerical-safety upper speed bound; explicitly not part of the OCP statement | n/a |
 | n/a | m/s | `defect_tol_v_m_per_s` | Per-interval speed defect-residual threshold that triggers mesh bisection | n/a |
 | n/a | J | `defect_tol_w_J` | Per-interval W' defect-residual threshold that triggers mesh bisection | n/a |
+| n/a | mixed | `ftol` (`SLSQPSolver`) | SLSQP convergence tolerance, applied absolutely to both the objective decrement [s] and the summed constraint violation [scaled] | n/a |
+| n/a | dimensionless | `maxiter` (`SLSQPSolver`) | SLSQP iteration budget | n/a |
+| n/a | mixed | `tol` (`IPOPTSolver`) | IPOPT primal-dual convergence tolerance (status 0, `Solve_Succeeded`) | n/a |
+| n/a | mixed | `acceptable_tol` (`IPOPTSolver`) | Looser IPOPT tolerance behind status 1, `Solved_To_Acceptable_Level`, which this project counts as converged | n/a |
+| n/a | dimensionless | `max_iter` (`IPOPTSolver`) | IPOPT iteration budget | n/a |
+| n/a | dimensionless | `print_level` (`IPOPTSolver`) | IPOPT console verbosity | n/a |
 
 ## Known naming inconsistencies
 
@@ -180,6 +186,12 @@ since they're spelling/aliasing issues, not distinct quantities.
   `ProcessedCourse.surface_factor` but is not consumed downstream - `physics.rolling_force_N`
   takes a single scalar `crr`, so surface-dependent rolling resistance is not currently applied to
   the equations of motion.
+- The six backend-tolerance names in section 7 (`ftol`, `maxiter`, `tol`, `acceptable_tol`,
+  `max_iter`, `print_level`) deliberately mirror the scipy/cyipopt option names they are passed
+  straight through to, so they carry no SI unit suffix and no `_per_` token. Renaming them would
+  break the one-to-one correspondence with the backend documentation a reader needs to interpret
+  them. The project's own tolerances (`defect_tol_v_m_per_s`, `defect_tol_w_J`) do follow the
+  convention.
 - The Caen appendix's smoothed softplus/sigmoid state-space form (Eq. [X].9-[X].11) is not what's
   implemented; `w_prime/caen.py`'s `_dg_caen`/`_dg_ds_caen` implement the unsmoothed hard-branch
   form (Eq. [X].6-[X].7) directly, matching `physics.py`'s existing hard-branch dispatch pattern

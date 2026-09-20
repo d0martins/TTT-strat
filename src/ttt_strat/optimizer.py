@@ -306,9 +306,26 @@ class Solver(Protocol):
 
 
 class SLSQPSolver:
-    """``scipy.optimize.minimize(method="SLSQP")`` backend — always available."""
+    """``scipy.optimize.minimize(method="SLSQP")`` backend — always available.
 
-    def __init__(self, maxiter: int = 600, ftol: float = 1e-9) -> None:
+    ``ftol`` is absolute, and scipy applies it to the summed constraint
+    violation as well as to the objective decrement. The former ``1e-9``
+    was unreachable on this problem: measured at convergence, the summed
+    scaled violation sits between 5e-9 and 8e-6 across the five courses
+    the phase-1 notebooks use, so SLSQP ran to ``maxiter`` and returned
+    "Iteration limit reached" on every solve this project had ever done.
+    The flag carried no information as a result (issue #6, item 7.6).
+
+    ``1e-5`` is the loosest-to-tightest sweep's smallest value that
+    returns success on all five courses (``1e-6`` still leaves the
+    synthetic rolling course and giro2026_s10 reporting failure). It
+    moves ``t_finish`` by at most 2.0e-05 relative, leaves the worst
+    speed defect at 1.2e-05 m/s (4000x inside ``defect_tol_v_m_per_s``),
+    and cuts 100-400 iterations off each solve. It is still 3.7e-09
+    relative against an objective of order 1e3 s.
+    """
+
+    def __init__(self, maxiter: int = 600, ftol: float = 1e-5) -> None:
         self.maxiter = maxiter
         self.ftol = ftol
 
@@ -362,6 +379,34 @@ class _IpoptCallbacks:
         return jac.flatten()
 
 
+def _ipopt_status_is_success(status: int) -> bool:
+    """Classify an IPOPT return status as a converged solve or not.
+
+    IPOPT reports two converged outcomes, not one: status ``0``
+    (``Solve_Succeeded``, the primal-dual error is below ``tol``) and
+    status ``1`` (``Solved_To_Acceptable_Level``, it is below
+    ``acceptable_tol`` instead). Treating only ``0`` as success
+    classified a converged answer as a failure and was part of why this
+    project had no usable convergence signal at all (issue #6, item
+    7.6). Every other status - iteration limit, infeasibility, an error
+    - is a genuine non-success.
+
+    Split out as a plain function so the classification is testable
+    without ``cyipopt`` installed.
+
+    Parameters
+    ----------
+    status : int
+        ``info["status"]`` as returned by ``cyipopt.Problem.solve``.
+
+    Returns
+    -------
+    bool
+        True for status 0 or 1, False otherwise.
+    """
+    return status in (0, 1)
+
+
 class IPOPTSolver:
     """``cyipopt`` (IPOPT) backend — requires the optional ``dev`` extra.
 
@@ -370,11 +415,38 @@ class IPOPTSolver:
     second derivatives of the HS defect Jacobian is out of scope for an
     MVP whose acceptance bar is "SLSQP and IPOPT agree to 0.1% on t_finish"
     (Phase 1 plan decision 5).
+
+    ``acceptable_tol`` is set explicitly rather than left at IPOPT's
+    implicit default because :func:`_ipopt_status_is_success` counts
+    ``Solved_To_Acceptable_Level`` as a converged solve: the tolerance
+    that outcome is measured against has to be one this project chose.
+
+    **This backend's flag is still uninformative, and not for a
+    tolerance reason.** Measured on all five phase-1 courses, IPOPT
+    returns status -1 (``Maximum_Iterations_Exceeded``) - never status
+    1 - and the returned iterate is bit-identical for every
+    ``(tol, acceptable_tol)`` pair from (1e-8, 1e-6) out to (1e-4, 1e-2),
+    because the overall NLP error never approaches any of them. On the
+    flat course at iteration 600 that error is 1.17e+01, essentially all
+    of it dual infeasibility, against a constraint violation of 1.4e-02
+    and complementarity of 8.9e-06: the primal iterate is fine and the
+    dual stagnates. That is the signature of the non-smooth ``P = CP``
+    kink in ``DifferentialModel``'s ``dh/dP`` combined with the
+    limited-memory Hessian, which issue #6 Section 8 tracks as an open
+    question. Raising ``max_iter`` was not tried; the stagnation is
+    oscillatory, not slow progress.
     """
 
-    def __init__(self, max_iter: int = 600, tol: float = 1e-8, print_level: int = 0) -> None:
+    def __init__(
+        self,
+        max_iter: int = 600,
+        tol: float = 1e-8,
+        acceptable_tol: float = 1e-6,
+        print_level: int = 0,
+    ) -> None:
         self.max_iter = max_iter
         self.tol = tol
+        self.acceptable_tol = acceptable_tol
         self.print_level = print_level
 
     def solve(self, problem: CollocationProblem, z0: np.ndarray) -> tuple[np.ndarray, bool, str]:
@@ -415,10 +487,11 @@ class IPOPTSolver:
         nlp.add_option("hessian_approximation", "limited-memory")
         nlp.add_option("max_iter", self.max_iter)
         nlp.add_option("tol", self.tol)
+        nlp.add_option("acceptable_tol", self.acceptable_tol)
         nlp.add_option("print_level", self.print_level)
 
         x_opt, info = nlp.solve(z0)
-        success = int(info["status"]) == 0
+        success = _ipopt_status_is_success(int(info["status"]))
         return x_opt, success, str(info["status_msg"])
 
 
